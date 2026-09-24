@@ -1,0 +1,423 @@
+openapi: 3.0.3
+info:
+  title: File Import and Export Service
+  description: >
+    Production-oriented backend service to import variable-structure CSV files,
+    persist customer data, track import results, and dynamically export stored data
+    as CSV, TXT, or XLSX.
+  version: 1.0.0
+  contact:
+    name: Backend Engineering Team
+
+tags:
+  - name: Imports
+    description: CSV file import and execution tracking
+  - name: Exports
+    description: Dynamic data export in multiple formats
+  - name: Customers
+    description: Stored customer records
+
+paths:
+  /api/v1/imports:
+    post:
+      tags:
+        - Imports
+      summary: Import customer data from one or more CSV files
+      description: >
+        Receives one or multiple multipart CSV files containing related customer data,
+        dynamically analyzes headers, validates records, performs idempotent upsert
+        and merging into the database, and tracks partial or full errors for each file.
+      operationId: importCsv
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - files
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  description: The CSV file(s) to import
+      responses:
+        '200':
+          description: Import completed (Full or Partial Success for each file)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImportResponse'
+        '400':
+          description: Malformed file or invalid payload
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+        '500':
+          description: Internal processing failure
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+
+  /api/v1/imports/{importId}:
+    get:
+      tags:
+        - Imports
+      summary: Retrieve summary of a specific import execution
+      operationId: getImportById
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          description: Unique identifier of the import execution
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Import execution details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResponse'
+        '404':
+          description: Import execution not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+
+  /api/v1/imports/{importId}/errors:
+    get:
+      tags:
+        - Imports
+      summary: Retrieve record-level errors for an import
+      operationId: getImportErrors
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          description: Unique identifier of the import execution
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of record validation or processing errors
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GroupedImportErrorResponse'
+        '404':
+          description: Import execution not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+
+  /api/v1/exports:
+    post:
+      tags:
+        - Exports
+      summary: Export customer records dynamically
+      description: >
+        Exports stored customer records in the requested format (CSV, TXT, XLS/XLSX)
+        containing only the requested columns in the specified order.
+      operationId: exportData
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportRequest'
+      responses:
+        '200':
+          description: Exported data file
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: File attachment header with filename
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+            text/csv:
+              schema:
+                type: string
+            text/plain:
+              schema:
+                type: string
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Invalid export column or format requested
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+
+  /api/v1/customers:
+    get:
+      tags:
+        - Customers
+      summary: List all persisted customers with pagination
+      operationId: listCustomers
+      parameters:
+        - name: page
+          in: query
+          description: Zero-based page index (0..N)
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: size
+          in: query
+          description: The size of the page to be returned
+          required: false
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: sortBy
+          in: query
+          description: Field name to sort by (e.g. id, name, email, age, country)
+          required: false
+          schema:
+            type: string
+            default: id
+        - name: direction
+          in: query
+          description: Sort direction (ASC or DESC)
+          required: false
+          schema:
+            type: string
+            enum: [ASC, DESC]
+            default: ASC
+      responses:
+        '200':
+          description: Paginated customer records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PageCustomerResponse'
+
+components:
+  schemas:
+    ImportResponse:
+      type: object
+      required:
+        - importId
+        - status
+        - totalRecords
+        - successfulRecords
+        - failedRecords
+      properties:
+        importId:
+          type: string
+          format: uuid
+          example: 550e8400-e29b-41d4-a716-446655440000
+        filename:
+          type: string
+          example: customers_01.csv
+        status:
+          type: string
+          enum: [SUCCESS, PARTIAL_SUCCESS, FAILED]
+          example: PARTIAL_SUCCESS
+        totalRecords:
+          type: integer
+          example: 3
+        successfulRecords:
+          type: integer
+          example: 2
+        failedRecords:
+          type: integer
+          example: 1
+
+    ImportErrorResponse:
+      type: object
+      required:
+        - rowNumber
+        - errorMessage
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        importId:
+          type: string
+          format: uuid
+          example: 550e8400-e29b-41d4-a716-446655440000
+        filename:
+          type: string
+          example: customers_03.csv
+        rowNumber:
+          type: integer
+          example: 3
+        fieldName:
+          type: string
+          example: age
+        errorMessage:
+          type: string
+          example: "Invalid age format: 'thirty' is not a valid integer"
+        rawData:
+          type: string
+          example: "5,Marco Rossi,+39000000000,marco@example,thirty,Italy"
+
+    GroupedImportErrorResponse:
+      type: object
+      required:
+        - rowNumber
+        - fieldNames
+        - errorMessages
+      properties:
+        importId:
+          type: string
+          format: uuid
+          example: 39be9ccc-fca1-4550-a672-cbc9131bd35a
+        filename:
+          type: string
+          example: customers_04.csv
+        rowNumber:
+          type: integer
+          example: 3
+        fieldNames:
+          type: array
+          items:
+            type: string
+          example: ["email", "age"]
+        errorMessages:
+          type: array
+          items:
+            type: string
+          example:
+            - "Field 'email' has invalid format: 'marco@example'"
+            - "Field 'age' must be a valid integer, got: 'thirty'"
+        rawData:
+          type: string
+          example: "5,Marco Rossi,+39000000000,marco@example,thirty,Italy,test"
+
+    ExportRequest:
+      type: object
+      required:
+        - format
+        - columns
+      properties:
+        format:
+          type: string
+          description: Desired export format
+          enum: [CSV, TXT, XLS, XLSX]
+          example: CSV
+        columns:
+          type: array
+          description: Columns to include and their precise output order
+          items:
+            type: string
+          example: ["id", "name", "email", "country"]
+
+    CustomerResponse:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        name:
+          type: string
+          example: John Smith
+        email:
+          type: string
+          nullable: true
+          example: john@example.com
+        age:
+          type: integer
+          nullable: true
+          example: 35
+        country:
+          type: string
+          nullable: true
+          example: Portugal
+        phone:
+          type: string
+          nullable: true
+          example: "+351910000000"
+        version:
+          type: integer
+          format: int64
+          example: 0
+
+    PageCustomerResponse:
+      type: object
+      required:
+        - content
+        - totalElements
+        - totalPages
+        - page
+        - size
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/CustomerResponse'
+        totalElements:
+          type: integer
+          format: int64
+          example: 100
+        totalPages:
+          type: integer
+          example: 5
+        page:
+          type: integer
+          example: 0
+        size:
+          type: integer
+          example: 20
+        isFirst:
+          type: boolean
+          example: true
+        isLast:
+          type: boolean
+          example: false
+
+    ProblemDetail:
+      type: object
+      required:
+        - status
+        - title
+      properties:
+        type:
+          type: string
+          format: uri
+          example: "https://planet.pt/problems/invalid-file"
+        title:
+          type: string
+          example: "Invalid file"
+        status:
+          type: integer
+          example: 400
+        detail:
+          type: string
+          example: "The uploaded file is not a valid CSV file."
+        instance:
+          type: string
+          format: uri
+          example: "/api/v1/imports"
+        timestamp:
+          type: string
+          format: date-time

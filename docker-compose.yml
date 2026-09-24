@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: csv-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: csvdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  db-init:
+    image: postgres:16-alpine
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: postgres
+    entrypoint: >
+      sh -c '
+        psql -h postgres -U postgres -tc "SELECT 1 FROM pg_database WHERE datname = '\''csvdb'\''" | grep -q 1 || \
+        psql -h postgres -U postgres -c "CREATE DATABASE csvdb;"
+      '
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: csv-management-app
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8081}:8080"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: csvdb
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+volumes:
+  pgdata:

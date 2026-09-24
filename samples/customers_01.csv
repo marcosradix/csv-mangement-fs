@@ -1,0 +1,4 @@
+id,name,email,age,country
+1,John Smith,john@example.com,35,Portugal
+2,Jane Doe,jane@example.com,28,Spain
+3,Bob Smith,bob@example.com,42,France
