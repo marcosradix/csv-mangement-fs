@@ -18,6 +18,7 @@ A production-grade, API-First backend service built natively with **Java 25** an
   - [1. Tracing with Correlation IDs](#1-tracing-with-correlation-ids)
   - [2. Health Probes & Business Status](#2-health-probes--business-status)
   - [3. Querying Prometheus & Actuator Metrics](#3-querying-prometheus--actuator-metrics)
+  - [4. Prometheus & Grafana Monitoring](#4-prometheus--grafana-monitoring)
 - [Import Error Logging](#import-error-logging)
 - [Error Handling (RFC 9457)](#error-handling-rfc-9457)
 - [Running the Application](#running-the-application)
@@ -65,7 +66,18 @@ The service follows an **API-First / Contract-First** design pattern, generating
         ┌────────────────▼────────────────┐
         │  Actuator + Micrometer Metrics  │
         │  (Health, Liveness, Prometheus) │
-        └─────────────────────────────────┘
+        └────────────────┬────────────────┘
+                         │  /actuator/prometheus
+                         ▼
+                ┌─────────────────┐
+                │   Prometheus    │ (:9090)
+                └────────┬────────┘
+                         │  PromQL
+                         ▼
+                ┌─────────────────┐
+                │     Grafana     │ (:3000)
+                │ (Pre-built Dash)│
+                └─────────────────┘
 ```
 
 ---
@@ -396,6 +408,39 @@ curl http://localhost:8081/actuator/metrics/file.export.duration
 
 ---
 
+### 4. Prometheus & Grafana Monitoring
+
+The Docker Compose environment comes with a fully automated, pre-configured observability stack:
+
+```
+┌─────────────────┐          /actuator/prometheus          ┌─────────────────┐              PromQL              ┌─────────────────┐
+│   Spring Boot   │ ─────────────────────────────────────► │   Prometheus    │ ────────────────────────────────► │     Grafana     │
+│   (Port 8081)   │                                        │   (Port 9090)   │                                   │   (Port 3000)   │
+└─────────────────┘                                        └─────────────────┘                                   └─────────────────┘
+```
+
+#### Accessing Prometheus:
+- **URL**: [http://localhost:9090](http://localhost:9090)
+- **Targets Page**: [http://localhost:9090/targets](http://localhost:9090/targets) (confirms `csv-management` target is `UP` scraping `app:8080/actuator/prometheus`).
+- **Sample PromQL Queries**:
+  - Total Imports: `sum(file_import_count_total)`
+  - Import Request Rate: `sum by (status) (rate(file_import_count_total[1m]))`
+  - Records Processed vs Failed: `sum by (type) (rate(file_import_records_total[1m]))`
+  - Average Import Duration: `rate(file_import_duration_seconds_sum[1m]) / rate(file_import_duration_seconds_count[1m])`
+  - Export Request Rate: `sum by (format) (rate(file_export_count_total[1m]))`
+
+#### Accessing Grafana:
+- **URL**: [http://localhost:3000](http://localhost:3000)
+- **Default Credentials**: `admin` / `admin`
+- **Datasource Provisioning**: Automatically pre-configured to query `http://prometheus:9090`.
+- **Pre-Built Dashboard**: **CSV Management - Service Observability** is automatically provisioned and ready on startup under the **CSV Management** folder. It includes:
+  - **KPI Stat Cards**: Total Imports, Successful Imports, Failed/Partial Imports, Total Records Processed, Total Exports, Exported Records.
+  - **Import Analytics**: Real-time import rate by status (`SUCCESS`, `PARTIAL_SUCCESS`, `FAILED`), processed vs. failed record rates, and average & max duration timers.
+  - **Export Analytics**: Multi-format export rates (CSV, TXT, XLSX), exported record counts, and export duration timers.
+  - **JVM & Infrastructure**: Heap memory usage (Used / Committed / Max), process vs system CPU utilization, and HikariCP connection pool states (Active, Idle, Pending).
+
+---
+
 ## Import Error Logging
 
 When invalid CSV records are processed during import (e.g. invalid email format or non-integer age), each error is persisted to the database and logged via `log.error`:
@@ -454,7 +499,7 @@ All API errors adhere to standard RFC 9457 `application/problem+json` format:
 Spins up the Spring Boot application and a dedicated PostgreSQL database container with health checks:
 
 ```bash
-# Build the image
+# Build the images
 docker compose build
 
 # Start the stack in background
@@ -467,7 +512,19 @@ docker compose logs -f app
 docker compose down
 ```
 
-The application will be accessible at: `http://localhost:8081`
+#### Exposed Endpoints & Services:
+
+| Service | Container Name | Host Port | Internal URL | Purpose |
+| :--- | :--- | :--- | :--- | :--- |
+| **Spring Boot App** | `csv-management-app` | `8081` | `http://app:8080` | REST API, Swagger UI, Actuator |
+| **PostgreSQL** | `csv-postgres` | `5432` | `postgres:5432` | Primary database (`csvdb`) |
+| **Prometheus** | `csv-prometheus` | `9090` | `http://prometheus:9090` | Time-series metrics scraper |
+| **Grafana** | `csv-grafana` | `3000` | `http://grafana:3000` | Dashboards (`admin`/`admin`) |
+
+- **App & Swagger UI**: [http://localhost:8081/swagger-ui.html](http://localhost:8081/swagger-ui.html)
+- **Actuator Health**: [http://localhost:8081/actuator/health](http://localhost:8081/actuator/health)
+- **Prometheus Dashboard**: [http://localhost:9090](http://localhost:9090)
+- **Grafana Dashboard**: [http://localhost:3000](http://localhost:3000) (admin / admin)
 
 > [!TIP]
 > Docker Compose includes an automated `db-init` one-shot container that ensures the `csvdb` database exists before launching the application, even if using an existing PostgreSQL volume.

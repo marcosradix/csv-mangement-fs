@@ -6,6 +6,10 @@ spring:
     username: sa
     password: ""
     driver-class-name: org.h2.Driver
+    hikari:
+      pool-name: CsvManagementTestHikariPool
+      maximum-pool-size: 5
+      minimum-idle: 1
   jpa:
     hibernate:
       ddl-auto: validate
