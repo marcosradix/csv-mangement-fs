@@ -8,6 +8,7 @@ A production-grade, API-First backend service built natively with **Java 25** an
 - [Architecture & Design](#architecture--design)
 - [Key Features](#key-features)
 - [Tech Stack & Dependencies](#tech-stack--dependencies)
+- [Sample Data & Files](#sample-data--files)
 - [API Reference](#api-reference)
   - [1. Import Operations](#1-import-operations)
   - [2. Customer Operations](#2-customer-operations)
@@ -99,7 +100,7 @@ The service follows an **API-First / Contract-First** design pattern, generating
    - Prometheus scrape endpoint at `/actuator/prometheus`.
 
 6. **Modern Tooling & Compatibility**:
-   - Fully compatible with **Java 25**, **MapStruct 1.6.3**, **Project Lombok 1.18.42**, and **JSpecify 1.0.1** standard nullness annotations (`@NullMarked`, `@Nullable`).
+   - Fully compatible with **Java 25**, **MapStruct 1.6.3**, **Project Lombok 1.18.42**, **Lombok MapStruct Binding 0.2.0**, and **Springdoc OpenAPI 2.8.5**.
 
 ---
 
@@ -109,7 +110,7 @@ The service follows an **API-First / Contract-First** design pattern, generating
 | :--- | :--- |
 | **Java** | 25 (Temurin 25.0.2 / Class file format 69) |
 | **Spring Boot** | 3.5.16 (Web, Data JPA, Validation, Actuator) |
-| **Nullness Specification** | JSpecify 1.0.1 (`@NullMarked`, `@Nullable`) |
+| **API Documentation** | Springdoc OpenAPI 2.8.5 (Swagger UI & OpenAPI 3.0) |
 | **Database** | PostgreSQL 16 (H2 in-memory for testing) |
 | **Schema Migrations** | Flyway 11.x |
 | **Code Generation** | OpenAPI Generator Maven Plugin 7.12.0 |
@@ -118,6 +119,21 @@ The service follows an **API-First / Contract-First** design pattern, generating
 | **File Processing** | Apache Commons CSV 1.12.0, Apache POI 5.4.0 (OOXML) |
 | **Metrics** | Micrometer Prometheus Registry |
 | **Containerization** | Docker multi-stage build & Docker Compose |
+
+---
+
+## Sample Data & Files
+
+The `samples/` directory provides pre-configured test data illustrating various import scenarios:
+
+| File | Records | Description / Purpose |
+| :--- | :---: | :--- |
+| `samples/customers_01.csv` | 3 | Standard valid records with headers: `id`, `name`, `email`, `age`, `country`. |
+| `samples/customers_02.csv` | 2 | Demonstrates multi-file data merging (`phone` column). Contains 1 valid record and 1 invalid record (empty age). |
+| `samples/customers_03.csv` | 2 | Demonstrates column order independence (`id,name,phone,email,age,country`) and multiple field validation errors (`marco@example`, `thirty`). |
+| `samples/customers_04.csv` | 1 | Demonstrates extraneous column tolerance (includes an unrecognized `other` column which is safely ignored). |
+| `samples/customers_05.csv` | 0 | Empty dataset with headers only. |
+| `samples/collections_call_api.har` | - | Exported HTTP Archive (HAR) file containing sample API requests and responses. |
 
 ---
 
@@ -181,7 +197,7 @@ Retrieves a paginated list of customers.
 - **Parameters**:
   - `page` (int, default: `0`): Zero-based page number.
   - `size` (int, default: `20`, min: `1`, max: `100`): Page size.
-  - `sortBy` (string, default: `id`): Sort field (`id`, `name`, `email`, `age`, `country`, `phone`).
+  - `sortBy` (string, default: `id`): Sort field (`id`, `name`, `email`, `age`, `country`, `phone`, `createdAt`, `updatedAt`).
   - `direction` (string, default: `ASC`): `ASC` or `DESC`.
 
 - **Response** (`200 OK`):
@@ -221,7 +237,7 @@ Generates a downloadable export file of persisted customers.
     "columns": ["id", "name", "phone", "email"]
   }
   ```
-- **Supported Formats**: `CSV`, `TXT`, `XLSX`.
+- **Supported Formats**: `CSV`, `TXT`, `XLSX`, `XLS`.
 - **Supported Columns**: `id`, `name`, `email`, `age`, `country`, `phone`.
 
 **Example TXT output:**
@@ -256,13 +272,22 @@ Ana Costa  | Portugal |
     }
   }
   ```
-- **`GET /actuator/prometheus`**: Exposes Prometheus metrics (`file_import_count_total`, `file_import_records_total`, `file_export_duration_seconds`).
+- **`GET /actuator/prometheus`**: Exposes Prometheus metrics:
+  - `file_import_count_total` (tags: `status=SUCCESS|PARTIAL_SUCCESS|FAILED`)
+  - `file_import_records_total` (tags: `type=successful|failed`)
+  - `file_import_duration_seconds` (timer measuring import execution duration)
+  - `file_export_count_total` (tags: `format=csv|txt|xlsx|xls`)
+  - `file_export_records_total` (tags: `format=csv|txt|xlsx|xls`)
+  - `file_export_duration_seconds` (timer measuring export file generation duration)
 
 ---
 
 ## How to Use Observability
 
 This section illustrates how to utilize the built-in observability features in development and production environments.
+
+> [!NOTE]
+> When running with **Docker Compose**, the application is exposed on host port `8081` (`http://localhost:8081`, mapped to container port `8080`). When running **locally via Maven / JAR**, the application defaults to port `8080` (`http://localhost:8080`) as specified in `src/main/resources/application.yml`.
 
 ### 1. Tracing with Correlation IDs
 
@@ -376,13 +401,14 @@ curl http://localhost:8081/actuator/metrics/file.export.duration
 When invalid CSV records are processed during import (e.g. invalid email format or non-integer age), each error is persisted to the database and logged via `log.error`:
 
 ```log
-2026-09-23T22:59:51.286+01:00 ERROR 15333 --- [csv-management-fs] [main] pt.planet.service.ImportService : Import error line: id=3, importId=08166aef-795a-4030-96b8-4ad1af10c820, rowNumber=3, fieldName='email', errorMessage='Field 'email' has invalid format: 'marco@example'', rawData='5,Marco Rossi,+39000000000,marco@example,thirty,Italy'
-2026-09-23T22:59:51.286+01:00 ERROR 15333 --- [csv-management-fs] [main] pt.planet.service.ImportService : Import error line: id=4, importId=08166aef-795a-4030-96b8-4ad1af10c820, rowNumber=3, fieldName='age', errorMessage='Field 'age' must be a valid integer, got: 'thirty'', rawData='5,Marco Rossi,+39000000000,marco@example,thirty,Italy'
+2026-09-24 12:29:53.915 [http-nio-8080-exec-1] [fdf0db1a-6fb9-4b1b-84f6-e3ebec05efe7] ERROR pt.planet.service.ImportService - Import error line: id=6, importId=fdf0db1a-6fb9-4b1b-84f6-e3ebec05efe7, filename='customers_03.csv', rowNumber=3, fieldName='email', errorMessage='Field 'email' has invalid format: 'marco@example'', rawData='5,Marco Rossi,+39000000000,marco@example,thirty,Italy'
+2026-09-24 12:29:53.915 [http-nio-8080-exec-1] [fdf0db1a-6fb9-4b1b-84f6-e3ebec05efe7] ERROR pt.planet.service.ImportService - Import error line: id=7, importId=fdf0db1a-6fb9-4b1b-84f6-e3ebec05efe7, filename='customers_03.csv', rowNumber=3, fieldName='age', errorMessage='Field 'age' must be a valid integer, got: 'thirty'', rawData='5,Marco Rossi,+39000000000,marco@example,thirty,Italy'
 ```
 
 Each log entry includes:
 - `id`: Unique database ID of the error record.
 - `importId`: UUID of the import execution.
+- `filename`: Source CSV filename where the error occurred.
 - `rowNumber`: Line number in the CSV file.
 - `fieldName`: Specific column that failed validation.
 - `errorMessage`: Detailed descriptive reason for the failure.
@@ -404,6 +430,20 @@ All API errors adhere to standard RFC 9457 `application/problem+json` format:
   "timestamp": "2026-09-23T20:17:31.219934837Z"
 }
 ```
+
+### Problem Types Handled
+
+| Problem Type URI | HTTP Status | Description |
+| :--- | :---: | :--- |
+| `https://planet.pt/problems/invalid-file` | `400 Bad Request` | Unparseable CSV file, missing request payload, or unsupported file format |
+| `https://planet.pt/problems/invalid-column` | `400 Bad Request` | Requested export column is unrecognized or empty |
+| `https://planet.pt/problems/invalid-import-record` | `400 Bad Request` | Malformed or invalid record encountered during import |
+| `https://planet.pt/problems/validation-error` | `400 Bad Request` | Request parameters failed validation constraints |
+| `https://planet.pt/problems/file-size-exceeded` | `400 Bad Request` | Uploaded file exceeds the configured maximum multipart size (50MB) |
+| `https://planet.pt/problems/customer-not-found` | `404 Not Found` | Import execution ID or customer resource does not exist |
+| `https://planet.pt/problems/concurrent-update-conflict` | `409 Conflict` | Optimistic locking collision detected during concurrent modifications (`@Version`) |
+| `https://planet.pt/problems/import-processing-error` | `500 Internal Server Error` | Unrecoverable I/O or parsing failure during import execution |
+| `https://planet.pt/problems/internal-error` | `500 Internal Server Error` | Generic unexpected internal server exception |
 
 ---
 
@@ -453,17 +493,18 @@ java -jar target/csv-management-fs-1.0.0.jar
 
 The test suite covers unit tests, repository interactions, concurrency locking, and end-to-end multipart API integration tests:
 
-| Test Class | Scope / Focus |
-| :--- | :--- |
-| `CsvHeaderAnalyzerTest` | Case insensitivity, column aliases, unknown headers, missing required columns |
-| `CustomerValidatorTest` | Validation rules (email regex, age bounds, positive ID, length constraints) |
-| `ExportStrategyTest` | Correctness of CSV, aligned TXT tables, and Excel XLSX workbooks |
-| `ImportServiceTest` | Upsert behavior, partial success tracking, multi-file related data merging, error logging |
-| `OptimisticLockingTest` | Concurrent update collisions and version checking |
-| `FileImportExportIntegrationTest` | End-to-end multi-part file uploads, pagination, sorting, and error retrieval |
+| Test Class | Tests | Scope / Focus |
+| :--- | :---: | :--- |
+| `CsvHeaderAnalyzerTest` | 7 | Case insensitivity, column aliases, unknown headers, missing required columns, whitespace trimming |
+| `CustomerValidatorTest` | 8 | Validation rules (email regex, age bounds, positive ID, length constraints) |
+| `ExportStrategyTest` | 3 | Correctness of CSV, aligned TXT tables, and Excel XLSX workbooks |
+| `ImportServiceTest` | 6 | Upsert behavior, partial success tracking, multi-file related data merging, error logging |
+| `OptimisticLockingTest` | 1 | Concurrent update collisions and version checking via `@Version` |
+| `FileImportExportIntegrationTest` | 2 | End-to-end multi-part file uploads, pagination, sorting, and error retrieval |
+| **Total** | **27** | **100% passing test suite** |
 
 Run the full test suite with:
 ```bash
 mvn clean test
 ```
-All **24 tests** execute cleanly with 0 failures and 0 errors.
+All **27 tests** execute cleanly with 0 failures and 0 errors.
