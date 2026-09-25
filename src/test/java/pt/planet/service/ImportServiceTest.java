@@ -256,4 +256,58 @@ class ImportServiceTest {
         assertThat(row5.getErrorMessages()).containsExactly("Field 'phone' is invalid");
         assertThat(row5.getRawData()).isEqualTo("6,Lucia,null");
     }
+
+    @Test
+    @DisplayName("Should continue processing valid CSV files when batch contains invalid files (empty and no data rows)")
+    void testBatchImportWithInvalidFilesContinuesAndProcessesValidFiles() throws Exception {
+        byte[] valid1 = Files.readAllBytes(Path.of("samples/customers_01.csv"));
+        byte[] valid2 = Files.readAllBytes(Path.of("samples/customers_02.csv"));
+
+        MockMultipartFile file1 = new MockMultipartFile("files", "customers_01.csv", "text/csv", valid1);
+        MockMultipartFile file2Empty = new MockMultipartFile("files", "empty.csv", "text/csv", new byte[0]);
+        MockMultipartFile file3NoRows = new MockMultipartFile("files", "no_rows.csv", "text/csv",
+                "id,name,email,age,country,phone\n".getBytes(StandardCharsets.UTF_8));
+        MockMultipartFile file4 = new MockMultipartFile("files", "customers_02.csv", "text/csv", valid2);
+
+        List<ImportResponse> responses = importService.processImports(List.of(file1, file2Empty, file3NoRows, file4));
+
+        assertThat(responses).hasSize(4);
+
+        // File 1: Success
+        assertThat(responses.get(0).getFilename()).isEqualTo("customers_01.csv");
+        assertThat(responses.get(0).getStatus()).isEqualTo(ImportResponse.StatusEnum.SUCCESS);
+        assertThat(responses.get(0).getTotalRecords()).isEqualTo(3);
+
+        // File 2: Empty -> Failed
+        assertThat(responses.get(1).getFilename()).isEqualTo("empty.csv");
+        assertThat(responses.get(1).getStatus()).isEqualTo(ImportResponse.StatusEnum.FAILED);
+        assertThat(responses.get(1).getTotalRecords()).isEqualTo(0);
+
+        // File 3: No rows -> Failed
+        assertThat(responses.get(2).getFilename()).isEqualTo("no_rows.csv");
+        assertThat(responses.get(2).getStatus()).isEqualTo(ImportResponse.StatusEnum.FAILED);
+        assertThat(responses.get(2).getTotalRecords()).isEqualTo(0);
+
+        // File 4: Valid with 1 success, 1 failure -> Partial Success
+        assertThat(responses.get(3).getFilename()).isEqualTo("customers_02.csv");
+        assertThat(responses.get(3).getStatus()).isEqualTo(ImportResponse.StatusEnum.PARTIAL_SUCCESS);
+
+        // Verify valid customers from files 1 and 4 were persisted and merged
+        assertThat(customerRepository.findById(1L)).isPresent();
+        assertThat(customerRepository.findById(1L).get().getPhone()).isEqualTo("+351910000000");
+        assertThat(customerRepository.findById(2L)).isPresent();
+        assertThat(customerRepository.findById(3L)).isPresent();
+
+        // Verify errors can be queried for the failed empty file
+        List<GroupedImportErrorResponse> emptyErrors = importService.getImportErrors(responses.get(1).getImportId());
+        assertThat(emptyErrors).isNotEmpty();
+        assertThat(emptyErrors.get(0).getFilename()).isEqualTo("empty.csv");
+        assertThat(emptyErrors.get(0).getErrorMessages().get(0)).contains("empty");
+
+        // Verify errors can be queried for the no-rows file
+        List<GroupedImportErrorResponse> noRowsErrors = importService.getImportErrors(responses.get(2).getImportId());
+        assertThat(noRowsErrors).isNotEmpty();
+        assertThat(noRowsErrors.get(0).getFilename()).isEqualTo("no_rows.csv");
+        assertThat(noRowsErrors.get(0).getErrorMessages().get(0)).contains("no data records");
+    }
 }

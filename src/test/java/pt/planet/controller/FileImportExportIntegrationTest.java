@@ -262,4 +262,27 @@ class FileImportExportIntegrationTest {
                                 .andExpect(jsonPath("$.content", hasSize(1)))
                                 .andExpect(jsonPath("$.content[0].name", is("John Smith")));
         }
+
+        @Test
+        @DisplayName("Batch import with invalid file should not fail whole batch and process valid files")
+        void testBatchImportWithInvalidFileContinuesProcessingValidFiles() throws Exception {
+                byte[] validCsv = Files.readAllBytes(Path.of("samples/customers_01.csv"));
+                MockMultipartFile validFile = new MockMultipartFile("files", "customers_01.csv", "text/csv", validCsv);
+                MockMultipartFile emptyFile = new MockMultipartFile("files", "empty.csv", "text/csv", new byte[0]);
+
+                mockMvc.perform(multipart("/api/v1/imports")
+                                .file(validFile)
+                                .file(emptyFile))
+                                .andExpect(status().isOk())
+                                .andExpect(jsonPath("$", hasSize(2)))
+                                .andExpect(jsonPath("$[0].filename", is("customers_01.csv")))
+                                .andExpect(jsonPath("$[0].status", is("SUCCESS")))
+                                .andExpect(jsonPath("$[0].totalRecords", is(3)))
+                                .andExpect(jsonPath("$[1].filename", is("empty.csv")))
+                                .andExpect(jsonPath("$[1].status", is("FAILED")))
+                                .andExpect(jsonPath("$[1].totalRecords", is(0)));
+
+                // Verify valid records were saved into DB
+                assertThat(customerRepository.count()).isEqualTo(3);
+        }
 }

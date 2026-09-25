@@ -20,6 +20,7 @@ A production-grade, API-First backend service built natively with **Java 25** an
   - [3. Querying Prometheus & Actuator Metrics](#3-querying-prometheus--actuator-metrics)
   - [4. Prometheus & Grafana Monitoring](#4-prometheus--grafana-monitoring)
 - [Import Error Logging](#import-error-logging)
+- [Resilient Batch Imports](#resilient-batch-imports)
 - [Error Handling (RFC 9457)](#error-handling-rfc-9457)
 - [Running the Application](#running-the-application)
   - [Option A: Docker Compose (Recommended)](#option-a-docker-compose-recommended)
@@ -89,6 +90,7 @@ The service follows an **API-First / Contract-First** design pattern, generating
    - **Row-Level Error Isolation**: Invalid rows are caught, persisted in `import_errors`, and logged without aborting the entire batch.
    - **Idempotent Upsert Logic**: Merges incoming customer updates by ID. If a customer already exists, non-empty fields update the record; otherwise, a new record is created.
    - **Multi-File Batch Imports**: Accepts multiple CSV files in a single request, merging related records across files (e.g. basic customer data in file 1 and contact information in file 2).
+   - **Fault-Tolerant Batch Imports**: Corrupted, empty, or headerless files within a batch do not abort execution; valid files are committed and invalid files are tracked as `FAILED`.
    - **Status Tracking**: Import batches are tracked with statuses: `SUCCESS`, `PARTIAL_SUCCESS`, or `FAILED`.
 
 2. **Pageable Customer Queries**:
@@ -454,10 +456,53 @@ Each log entry includes:
 - `id`: Unique database ID of the error record.
 - `importId`: UUID of the import execution.
 - `filename`: Source CSV filename where the error occurred.
-- `rowNumber`: Line number in the CSV file.
-- `fieldName`: Specific column that failed validation.
+- `rowNumber`: Line number in the CSV file (`0` for file-level or structural failures).
+- `fieldName`: Specific column that failed validation (`file` for structural failures).
 - `errorMessage`: Detailed descriptive reason for the failure.
 - `rawData`: Complete unparsed CSV row content.
+
+---
+
+## Resilient Batch Imports
+
+When uploading multiple CSV files in a single batch request (`POST /api/v1/imports`), the service implements **fault-tolerant execution**:
+
+- **Transaction Isolation**: Each file executes within its own independent database transaction. A failure in one file never rolls back or aborts valid files in the same batch.
+- **Non-blocking Loop**: If an individual file is invalid (e.g., empty file, missing header row, no data rows, or unreadable format), the service logs a warning and an error, records the failure, and continues processing the remaining files.
+- **Audit & Traceability**: Each invalid file is persisted in `imports` with status `FAILED` (`totalRecords: 0`, `successfulRecords: 0`, `failedRecords: 0`), and its failure reason is logged and stored in `import_errors` (`rowNumber: 0`, `fieldName: "file"`).
+- **Comprehensive API Response**: The API returns HTTP `200 OK` with an array of `ImportResponse` objects corresponding 1-to-1 to each uploaded file. Clients can query `GET /api/v1/imports/{importId}/errors` to inspect the exact reason for any failed file.
+
+### Example Response for Mixed Batch:
+When uploading `customers_01.csv` (valid), `empty.csv` (empty file), and `customers_02.csv` (partially valid):
+
+```json
+[
+  {
+    "importId": "9b3889ed-fda6-42cf-ba52-375e6e2775a0",
+    "filename": "customers_01.csv",
+    "status": "SUCCESS",
+    "totalRecords": 3,
+    "successfulRecords": 3,
+    "failedRecords": 0
+  },
+  {
+    "importId": "2fd50bb4-37c3-4a99-abab-3b0588f24ead",
+    "filename": "empty.csv",
+    "status": "FAILED",
+    "totalRecords": 0,
+    "successfulRecords": 0,
+    "failedRecords": 0
+  },
+  {
+    "importId": "e1f67819-1203-47b9-ab1d-4edfb0aa19a0",
+    "filename": "customers_02.csv",
+    "status": "PARTIAL_SUCCESS",
+    "totalRecords": 2,
+    "successfulRecords": 1,
+    "failedRecords": 1
+  }
+]
+```
 
 ---
 
@@ -555,13 +600,14 @@ The test suite covers unit tests, repository interactions, concurrency locking, 
 | `CsvHeaderAnalyzerTest` | 7 | Case insensitivity, column aliases, unknown headers, missing required columns, whitespace trimming |
 | `CustomerValidatorTest` | 8 | Validation rules (email regex, age bounds, positive ID, length constraints) |
 | `ExportStrategyTest` | 3 | Correctness of CSV, aligned TXT tables, and Excel XLSX workbooks |
-| `ImportServiceTest` | 6 | Upsert behavior, partial success tracking, multi-file related data merging, error logging |
+| `ExportServiceTest` | 10 | Export business logic, strategy routing, column validation, metrics recording, and mock data tests |
+| `ImportServiceTest` | 7 | Upsert behavior, partial success tracking, resilient batch imports with invalid files, multi-file data merging, error logging |
 | `OptimisticLockingTest` | 1 | Concurrent update collisions and version checking via `@Version` |
-| `FileImportExportIntegrationTest` | 2 | End-to-end multi-part file uploads, pagination, sorting, and error retrieval |
-| **Total** | **27** | **100% passing test suite** |
+| `FileImportExportIntegrationTest` | 3 | End-to-end multi-part file uploads, resilient batch imports, pagination, sorting, and error retrieval |
+| **Total** | **39** | **100% passing test suite** |
 
 Run the full test suite with:
 ```bash
 mvn clean test
 ```
-All **27 tests** execute cleanly with 0 failures and 0 errors.
+All **39 tests** execute cleanly with 0 failures and 0 errors.

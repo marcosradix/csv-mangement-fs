@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.ObjectUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 import pt.planet.domain.CustomerEntity;
 import pt.planet.domain.ImportEntity;
@@ -40,8 +41,8 @@ public class ImportService {
     private final ImportErrorRepository importErrorRepository;
     private final CustomerMapper customerMapper;
     private final AppMetricsService appMetricsService;
+    private final TransactionTemplate transactionTemplate;
 
-    @Transactional
     public List<ImportResponse> processImports(List<MultipartFile> files) {
         if (files == null || files.isEmpty()) {
             throw new InvalidFileException("At least one CSV file must be provided for import");
@@ -49,9 +50,67 @@ public class ImportService {
 
         List<ImportResponse> responses = new ArrayList<>(files.size());
         for (MultipartFile file : files) {
-            responses.add(processImport(file));
+            String originalFilename = (file != null && file.getOriginalFilename() != null && !file.getOriginalFilename().isBlank())
+                    ? file.getOriginalFilename()
+                    : "unknown.csv";
+            Instant fileStartTime = Instant.now();
+
+            try {
+                ImportResponse response = transactionTemplate.execute(status -> processImport(file));
+                responses.add(response);
+            } catch (Exception ex) {
+                Duration duration = Duration.between(fileStartTime, Instant.now());
+                log.warn("Failed to import file '{}': {}. Continuing with remaining files.", originalFilename, ex.getMessage());
+                try {
+                    ImportResponse failedResponse = transactionTemplate.execute(status ->
+                            recordFailedImport(originalFilename, ex.getMessage(), duration));
+                    responses.add(failedResponse);
+                } catch (Exception dbEx) {
+                    log.error("Failed to record failed import for file '{}': {}", originalFilename, dbEx.getMessage(), dbEx);
+                }
+            }
         }
         return responses;
+    }
+
+    private ImportResponse recordFailedImport(String filename, String errorMessage, Duration duration) {
+        UUID importId = UUID.randomUUID();
+
+        ImportEntity importEntity = new ImportEntity(
+                importId,
+                filename,
+                ImportStatus.FAILED,
+                0,
+                0,
+                0
+        );
+        importRepository.save(importEntity);
+
+        String safeErrorMessage = (errorMessage != null && !errorMessage.isBlank())
+                ? errorMessage
+                : "Unknown error occurred while processing file";
+        if (safeErrorMessage.length() > 500) {
+            safeErrorMessage = safeErrorMessage.substring(0, 497) + "...";
+        }
+
+        ImportErrorEntity errorEntity = new ImportErrorEntity(
+                importId,
+                filename,
+                0,
+                "file",
+                safeErrorMessage,
+                ""
+        );
+        importErrorRepository.saveAndFlush(errorEntity);
+
+        log.error("Import error file: id={}, importId={}, filename='{}', errorMessage='{}'",
+                errorEntity.getId(), importId, filename, safeErrorMessage);
+
+        appMetricsService.recordImport(ImportStatus.FAILED.name(), 0, 0, 0, duration);
+
+        log.info("Recorded failed import {} ({}) - Error: {}", importId, filename, safeErrorMessage);
+
+        return customerMapper.toImportResponse(importEntity);
     }
 
     @Transactional
