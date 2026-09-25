@@ -621,16 +621,16 @@ java -jar target/csv-management-fs-1.0.0.jar
 
 The test suite covers unit tests, repository interactions, concurrency locking, and end-to-end multipart API integration tests:
 
-| Test Class | Tests | Scope / Focus |
-| :--- | :---: | :--- |
-| `CsvHeaderAnalyzerTest` | 7 | Case insensitivity, column aliases, unknown headers, missing required columns, whitespace trimming |
-| `CustomerValidatorTest` | 8 | Validation rules (email regex, age bounds, positive ID, length constraints) |
-| `ExportStrategyTest` | 3 | Correctness of CSV, aligned TXT tables, and Excel XLSX workbooks |
-| `ExportServiceTest` | 10 | Export business logic, strategy routing, column validation, metrics recording, and mock data tests |
-| `ImportServiceTest` | 7 | Upsert behavior, partial success tracking, resilient batch imports with invalid files, multi-file data merging, error logging |
-| `OptimisticLockingTest` | 1 | Concurrent update collisions and version checking via `@Version` |
-| `FileImportExportIntegrationTest` | 3 | End-to-end multi-part file uploads, resilient batch imports, pagination, sorting, and error retrieval |
-| **Total** | **39** | **100% passing test suite** |
+| Test Class | Tests  | Scope / Focus |
+| :--- |:------:| :--- |
+| `CsvHeaderAnalyzerTest` |   7    | Case insensitivity, column aliases, unknown headers, missing required columns, whitespace trimming |
+| `CustomerValidatorTest` |   8    | Validation rules (email regex, age bounds, positive ID, length constraints) |
+| `ExportStrategyTest` |   3    | Correctness of CSV, aligned TXT tables, and Excel XLSX workbooks |
+| `ExportServiceTest` |   10   | Export business logic, strategy routing, column validation, metrics recording, and mock data tests |
+| `ImportServiceTest` |   7    | Upsert behavior, partial success tracking, resilient batch imports with invalid files, multi-file data merging, error logging |
+| `OptimisticLockingTest` |   1    | Concurrent update collisions and version checking via `@Version` |
+| `FileImportExportIntegrationTest` |   5    | End-to-end multi-part file uploads, resilient batch imports, pagination, sorting, and error retrieval |
+| **Total** | **41** | **100% passing test suite** |
 
 Run the full test suite with:
 ```bash

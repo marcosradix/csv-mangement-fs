@@ -285,4 +285,35 @@ class FileImportExportIntegrationTest {
                 // Verify valid records were saved into DB
                 assertThat(customerRepository.count()).isEqualTo(3);
         }
+
+        @Test
+        @DisplayName("Unsupported export format should return HTTP 400 Bad Request with RFC 9457 Problem Detail")
+        void testUnsupportedExportFormatReturns400() throws Exception {
+                String invalidFormatPayload = """
+                                {
+                                    "format": "TXT0",
+                                    "columns": ["id", "name"]
+                                }
+                                """;
+                mockMvc.perform(post("/api/v1/exports")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(invalidFormatPayload))
+                                .andExpect(status().isBadRequest())
+                                .andExpect(jsonPath("$.status", is(400)))
+                                .andExpect(jsonPath("$.title", is("Invalid Export Format")))
+                                .andExpect(jsonPath("$.detail", containsString("Unsupported export format: 'TXT0'")))
+                                .andExpect(jsonPath("$.type", is("https://planet.pt/problems/invalid-export-format")));
+        }
+
+        @Test
+        @DisplayName("Malformed JSON payload should return HTTP 400 Bad Request with Problem Detail")
+        void testMalformedJsonPayloadReturns400() throws Exception {
+                mockMvc.perform(post("/api/v1/exports")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{ invalid json"))
+                                .andExpect(status().isBadRequest())
+                                .andExpect(jsonPath("$.status", is(400)))
+                                .andExpect(jsonPath("$.title", is("Malformed Request")))
+                                .andExpect(jsonPath("$.type", is("https://planet.pt/problems/malformed-request")));
+        }
 }

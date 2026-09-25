@@ -12,6 +12,7 @@ import pt.planet.domain.CustomerEntity;
 import pt.planet.dto.ExportRequest;
 import pt.planet.dto.ExportRequest.FormatEnum;
 import pt.planet.exception.InvalidColumnException;
+import pt.planet.exception.InvalidExportFormatException;
 import pt.planet.exception.InvalidFileException;
 import pt.planet.exportfile.CustomerColumn;
 import pt.planet.exportfile.CsvExportStrategy;
@@ -275,7 +276,7 @@ class ExportServiceTest {
     }
 
     @Test
-    @DisplayName("Should throw InvalidFileException when no strategy supports the requested format")
+    @DisplayName("Should throw InvalidExportFormatException when no strategy supports the requested format")
     void testExportThrowsWhenNoStrategySupportsFormat() {
         // Only CSV strategy provided
         ExportService serviceOnlyCsv = new ExportService(
@@ -289,6 +290,7 @@ class ExportServiceTest {
         ExportRequest request = new ExportRequest(FormatEnum.TXT, List.of("id", "name"));
 
         assertThatThrownBy(() -> serviceOnlyCsv.exportCustomers(request))
+                .isInstanceOf(InvalidExportFormatException.class)
                 .isInstanceOf(InvalidFileException.class)
                 .hasMessageContaining("Unsupported export format: 'TXT'");
 

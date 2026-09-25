@@ -9,6 +9,7 @@ import pt.planet.domain.CustomerEntity;
 import pt.planet.dto.ExportRequest;
 import pt.planet.dto.ExportRequest.FormatEnum;
 import pt.planet.exception.InvalidColumnException;
+import pt.planet.exception.InvalidExportFormatException;
 import pt.planet.exception.InvalidFileException;
 import pt.planet.exportfile.CustomerColumn;
 import pt.planet.exportfile.ExportStrategy;
@@ -65,7 +66,7 @@ public class ExportService {
         ExportStrategy strategy = exportStrategies.stream()
                 .filter(s -> s.supports(format))
                 .findFirst()
-                .orElseThrow(() -> new InvalidFileException("Unsupported export format: '" + format +
+                .orElseThrow(() -> new InvalidExportFormatException("Unsupported export format: '" + format +
                         "'. Supported formats are CSV, TXT, XLS, XLSX."));
 
         Instant startTime = Instant.now();

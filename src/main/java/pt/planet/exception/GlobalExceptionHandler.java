@@ -1,17 +1,22 @@
 package pt.planet.exception;
 
+import com.fasterxml.jackson.databind.exc.InvalidFormatException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import pt.planet.dto.ExportRequest;
 
 import java.net.URI;
 import java.time.OffsetDateTime;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -19,6 +24,18 @@ import java.util.stream.Collectors;
 public class GlobalExceptionHandler {
 
     private static final String BASE_PROBLEM_TYPE = "https://planet.pt/problems/";
+
+    @ExceptionHandler(InvalidExportFormatException.class)
+    public ProblemDetail handleInvalidExportFormat(InvalidExportFormatException ex, HttpServletRequest request) {
+        log.warn("Invalid export format: {}", ex.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Invalid Export Format");
+        problem.setDetail(ex.getMessage());
+        problem.setType(URI.create(BASE_PROBLEM_TYPE + "invalid-export-format"));
+        problem.setInstance(URI.create(request.getRequestURI()));
+        problem.setProperty("timestamp", OffsetDateTime.now());
+        return problem;
+    }
 
     @ExceptionHandler(InvalidFileException.class)
     public ProblemDetail handleInvalidFile(InvalidFileException ex, HttpServletRequest request) {
@@ -116,6 +133,85 @@ public class GlobalExceptionHandler {
         problem.setTitle("Import Processing Error");
         problem.setDetail(ex.getMessage());
         problem.setType(URI.create(BASE_PROBLEM_TYPE + "import-processing-error"));
+        problem.setInstance(URI.create(request.getRequestURI()));
+        problem.setProperty("timestamp", OffsetDateTime.now());
+        return problem;
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ProblemDetail handleHttpMessageNotReadable(HttpMessageNotReadableException ex, HttpServletRequest request) {
+        log.warn("Malformed or unreadable request: {}", ex.getMessage());
+
+        Throwable cause = ex.getCause();
+        if (cause instanceof InvalidFormatException ife) {
+            String fieldName = ife.getPath().stream()
+                    .map(com.fasterxml.jackson.databind.JsonMappingException.Reference::getFieldName)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.joining("."));
+
+            if ("format".equalsIgnoreCase(fieldName) ||
+                    (ife.getTargetType() != null && ExportRequest.FormatEnum.class.isAssignableFrom(ife.getTargetType()))) {
+                ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+                problem.setTitle("Invalid Export Format");
+                problem.setDetail(String.format("Unsupported export format: '%s'. Supported formats are CSV, TXT, XLS, XLSX.", ife.getValue()));
+                problem.setType(URI.create(BASE_PROBLEM_TYPE + "invalid-export-format"));
+                problem.setInstance(URI.create(request.getRequestURI()));
+                problem.setProperty("timestamp", OffsetDateTime.now());
+                return problem;
+            }
+
+            ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+            problem.setTitle("Invalid Request Body");
+            problem.setDetail(String.format("Invalid value '%s' for field '%s'.", ife.getValue(), fieldName));
+            problem.setType(URI.create(BASE_PROBLEM_TYPE + "invalid-request-body"));
+            problem.setInstance(URI.create(request.getRequestURI()));
+            problem.setProperty("timestamp", OffsetDateTime.now());
+            return problem;
+        }
+
+        Throwable mostSpecificCause = ex.getMostSpecificCause();
+        if (mostSpecificCause instanceof IllegalArgumentException iae && iae.getMessage() != null && iae.getMessage().startsWith("Unexpected value '")) {
+            String message = iae.getMessage();
+            String value = message.substring(message.indexOf('\'') + 1, message.lastIndexOf('\''));
+            ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+            problem.setTitle("Invalid Export Format");
+            problem.setDetail(String.format("Unsupported export format: '%s'. Supported formats are CSV, TXT, XLS, XLSX.", value));
+            problem.setType(URI.create(BASE_PROBLEM_TYPE + "invalid-export-format"));
+            problem.setInstance(URI.create(request.getRequestURI()));
+            problem.setProperty("timestamp", OffsetDateTime.now());
+            return problem;
+        }
+
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Malformed Request");
+        problem.setDetail(mostSpecificCause != null && mostSpecificCause.getMessage() != null
+                ? mostSpecificCause.getMessage()
+                : "Malformed or unreadable request payload.");
+        problem.setType(URI.create(BASE_PROBLEM_TYPE + "malformed-request"));
+        problem.setInstance(URI.create(request.getRequestURI()));
+        problem.setProperty("timestamp", OffsetDateTime.now());
+        return problem;
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ProblemDetail handleIllegalArgument(IllegalArgumentException ex, HttpServletRequest request) {
+        log.warn("Invalid argument: {}", ex.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Invalid Argument");
+        problem.setDetail(ex.getMessage());
+        problem.setType(URI.create(BASE_PROBLEM_TYPE + "invalid-argument"));
+        problem.setInstance(URI.create(request.getRequestURI()));
+        problem.setProperty("timestamp", OffsetDateTime.now());
+        return problem;
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ProblemDetail handleTypeMismatch(MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
+        log.warn("Parameter type mismatch: {}", ex.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Type Mismatch");
+        problem.setDetail(String.format("Invalid value '%s' for parameter '%s'", ex.getValue(), ex.getName()));
+        problem.setType(URI.create(BASE_PROBLEM_TYPE + "type-mismatch"));
         problem.setInstance(URI.create(request.getRequestURI()));
         problem.setProperty("timestamp", OffsetDateTime.now());
         return problem;
