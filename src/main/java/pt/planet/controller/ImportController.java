@@ -6,7 +6,6 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import pt.planet.api.ImportsApi;
 import pt.planet.dto.GroupedImportErrorResponse;
-import pt.planet.dto.ImportErrorResponse;
 import pt.planet.dto.ImportResponse;
 import pt.planet.service.ImportService;
 

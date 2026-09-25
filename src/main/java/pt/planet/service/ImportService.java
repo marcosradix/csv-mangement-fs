@@ -1,5 +1,6 @@
 package pt.planet.service;
 
+import io.micrometer.observation.annotation.Observed;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.ObjectUtils;
@@ -12,7 +13,6 @@ import pt.planet.domain.ImportEntity;
 import pt.planet.domain.ImportErrorEntity;
 import pt.planet.domain.ImportStatus;
 import pt.planet.dto.GroupedImportErrorResponse;
-import pt.planet.dto.ImportErrorResponse;
 import pt.planet.dto.ImportResponse;
 import pt.planet.exception.CustomerNotFoundException;
 import pt.planet.exception.InvalidFileException;
@@ -43,6 +43,7 @@ public class ImportService {
     private final AppMetricsService appMetricsService;
     private final TransactionTemplate transactionTemplate;
 
+    @Observed(name = "file.import.batch", contextualName = "process-imports-batch")
     public List<ImportResponse> processImports(List<MultipartFile> files) {
         if (files == null || files.isEmpty()) {
             throw new InvalidFileException("At least one CSV file must be provided for import");
@@ -50,9 +51,10 @@ public class ImportService {
 
         List<ImportResponse> responses = new ArrayList<>(files.size());
         for (MultipartFile file : files) {
-            String originalFilename = (file != null && file.getOriginalFilename() != null && !file.getOriginalFilename().isBlank())
-                    ? file.getOriginalFilename()
-                    : "unknown.csv";
+            String originalFilename = (file != null && file.getOriginalFilename() != null
+                    && !file.getOriginalFilename().isBlank())
+                            ? file.getOriginalFilename()
+                            : "unknown.csv";
             Instant fileStartTime = Instant.now();
 
             try {
@@ -60,13 +62,15 @@ public class ImportService {
                 responses.add(response);
             } catch (Exception ex) {
                 Duration duration = Duration.between(fileStartTime, Instant.now());
-                log.warn("Failed to import file '{}': {}. Continuing with remaining files.", originalFilename, ex.getMessage());
+                log.warn("Failed to import file '{}': {}. Continuing with remaining files.", originalFilename,
+                        ex.getMessage());
                 try {
-                    ImportResponse failedResponse = transactionTemplate.execute(status ->
-                            recordFailedImport(originalFilename, ex.getMessage(), duration));
+                    ImportResponse failedResponse = transactionTemplate
+                            .execute(status -> recordFailedImport(originalFilename, ex.getMessage(), duration));
                     responses.add(failedResponse);
                 } catch (Exception dbEx) {
-                    log.error("Failed to record failed import for file '{}': {}", originalFilename, dbEx.getMessage(), dbEx);
+                    log.error("Failed to record failed import for file '{}': {}", originalFilename, dbEx.getMessage(),
+                            dbEx);
                 }
             }
         }
@@ -82,8 +86,7 @@ public class ImportService {
                 ImportStatus.FAILED,
                 0,
                 0,
-                0
-        );
+                0);
         importRepository.save(importEntity);
 
         String safeErrorMessage = (errorMessage != null && !errorMessage.isBlank())
@@ -99,8 +102,7 @@ public class ImportService {
                 0,
                 "file",
                 safeErrorMessage,
-                ""
-        );
+                "");
         importErrorRepository.saveAndFlush(errorEntity);
 
         log.error("Import error file: id={}, importId={}, filename='{}', errorMessage='{}'",
@@ -113,6 +115,7 @@ public class ImportService {
         return customerMapper.toImportResponse(importEntity);
     }
 
+    @Observed(name = "file.import.single", contextualName = "process-single-file")
     @Transactional
     public ImportResponse processImport(MultipartFile file) {
         if (file == null || file.isEmpty()) {
@@ -269,7 +272,8 @@ public class ImportService {
         for (ImportErrorEntity err : errors) {
             log.error(
                     "Import error line: id={}, importId={}, filename='{}', rowNumber={}, fieldName='{}', errorMessage='{}', rawData='{}'",
-                    err.getId(), err.getImportId(), err.getFilename(), err.getRowNumber(), err.getFieldName(), err.getErrorMessage(),
+                    err.getId(), err.getImportId(), err.getFilename(), err.getRowNumber(), err.getFieldName(),
+                    err.getErrorMessage(),
                     err.getRawData());
         }
     }

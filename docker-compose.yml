@@ -45,17 +45,33 @@ services:
       DB_NAME: csvdb
       DB_USERNAME: postgres
       DB_PASSWORD: postgres
+      MANAGEMENT_OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
     depends_on:
       postgres:
         condition: service_healthy
       db-init:
         condition: service_completed_successfully
+      tempo:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health/readiness"]
       interval: 10s
       timeout: 5s
       start_period: 20s
       retries: 5
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: csv-tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - ./tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"
+      - "4317:4317"
+      - "4318:4318"
 
   prometheus:
     image: prom/prometheus:latest
@@ -86,9 +102,11 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
+      - tempo
 
 volumes:
   pgdata:
   prometheus_data:
   grafana_data:
+  tempo_data:
 

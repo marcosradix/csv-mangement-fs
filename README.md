@@ -410,15 +410,20 @@ curl http://localhost:8081/actuator/metrics/file.export.duration
 
 ---
 
-### 4. Prometheus & Grafana Monitoring
+### 4. Prometheus, Tempo & Grafana Observability (Metrics & Tracing)
 
-The Docker Compose environment comes with a fully automated, pre-configured observability stack:
+The Docker Compose environment comes with a fully automated, pre-configured observability stack with metrics and distributed tracing:
 
 ```
 ┌─────────────────┐          /actuator/prometheus          ┌─────────────────┐              PromQL              ┌─────────────────┐
 │   Spring Boot   │ ─────────────────────────────────────► │   Prometheus    │ ────────────────────────────────► │     Grafana     │
 │   (Port 8081)   │                                        │   (Port 9090)   │                                   │   (Port 3000)   │
 └─────────────────┘                                        └─────────────────┘                                   └─────────────────┘
+         │                                                                                                                ▲
+         │                      OTLP / HTTP (4318)         ┌─────────────────┐             TraceQL / Spans                │
+         └───────────────────────────────────────────────► │  Grafana Tempo  │ ───────────────────────────────────────────┘
+                                                           │   (Port 3200)   │
+                                                           └─────────────────┘
 ```
 
 #### Accessing Prometheus:
@@ -431,15 +436,34 @@ The Docker Compose environment comes with a fully automated, pre-configured obse
   - Average Import Duration: `rate(file_import_duration_seconds_sum[1m]) / rate(file_import_duration_seconds_count[1m])`
   - Export Request Rate: `sum by (format) (rate(file_export_count_total[1m]))`
 
+#### Accessing Grafana Tempo (Distributed Tracing):
+- **URL**: [http://localhost:3200](http://localhost:3200) (Tempo HTTP endpoint)
+- **OTLP Endpoints**:
+  - HTTP: `http://localhost:4318/v1/traces` (used by Spring Boot Actuator & OpenTelemetry exporter)
+  - gRPC: `localhost:4317`
+- **TraceQL Query Examples** in Grafana:
+  - All traces: `{}`
+  - Spans for this service: `{ resource.service.name = "csv-management-fs" }`
+  - Only errors: `{ status = error }`
+  - Slow operations (>100ms): `{ duration > 100ms }`
+  - Import operations: `{ name =~ ".*import.*" }`
+  - Export operations: `{ name =~ ".*export.*" }`
+
 #### Accessing Grafana:
 - **URL**: [http://localhost:3000](http://localhost:3000)
 - **Default Credentials**: `admin` / `admin`
-- **Datasource Provisioning**: Automatically pre-configured to query `http://prometheus:9090`.
+- **Datasource Provisioning**: Automatically pre-configured with:
+  - **Prometheus** (`uid: Prometheus`) with exemplars linked to Tempo.
+  - **Tempo** (`uid: tempo`) with TraceQL support, node graphs, and traces-to-metrics correlation.
 - **Pre-Built Dashboard**: **CSV Management - Service Observability** is automatically provisioned and ready on startup under the **CSV Management** folder. It includes:
   - **KPI Stat Cards**: Total Imports, Successful Imports, Failed/Partial Imports, Total Records Processed, Total Exports, Exported Records.
-  - **Import Analytics**: Real-time import rate by status (`SUCCESS`, `PARTIAL_SUCCESS`, `FAILED`), processed vs. failed record rates, and average & max duration timers.
-  - **Export Analytics**: Multi-format export rates (CSV, TXT, XLSX), exported record counts, and export duration timers.
+  - **Import Analytics**: Real-time import rate by status (`SUCCESS`, `PARTIAL_SUCCESS`, `FAILED`), processed vs. failed record rates, and average & max duration timers (with **exemplars** enabled).
+  - **Export Analytics**: Multi-format export rates (CSV, TXT, XLSX), exported record counts, and export duration timers (with **exemplars** enabled).
   - **JVM & Infrastructure**: Heap memory usage (Used / Committed / Max), process vs system CPU utilization, and HikariCP connection pool states (Active, Idle, Pending).
+  - **Distributed Tracing (Tempo)**:
+    - **Live Distributed Traces Table**: Search, filter, and inspect traces directly inside the dashboard. Clicking any trace expands the complete waterfall span tree showing individual steps (`import-csv-files`, `process-single-file`, `export-customers`).
+    - **Exemplar Integration**: Click on exemplar dots directly inside the duration charts to navigate to that specific request's trace.
+    - **Direct Explore Button**: Shortcut at the top of the dashboard to jump into Grafana Explore with Tempo preloaded.
 
 ---
 
@@ -563,13 +587,15 @@ docker compose down
 | :--- | :--- | :--- | :--- | :--- |
 | **Spring Boot App** | `csv-management-app` | `8081` | `http://app:8080` | REST API, Swagger UI, Actuator |
 | **PostgreSQL** | `csv-postgres` | `5432` | `postgres:5432` | Primary database (`csvdb`) |
+| **Tempo** | `csv-tempo` | `3200`, `4317`, `4318` | `http://tempo:3200` | Distributed Tracing Backend (OTLP) |
 | **Prometheus** | `csv-prometheus` | `9090` | `http://prometheus:9090` | Time-series metrics scraper |
-| **Grafana** | `csv-grafana` | `3000` | `http://grafana:3000` | Dashboards (`admin`/`admin`) |
+| **Grafana** | `csv-grafana` | `3000` | `http://grafana:3000` | Dashboards & Trace Explorer (`admin`/`admin`) |
 
 - **App & Swagger UI**: [http://localhost:8081/swagger-ui.html](http://localhost:8081/swagger-ui.html)
 - **Actuator Health**: [http://localhost:8081/actuator/health](http://localhost:8081/actuator/health)
+- **Grafana Dashboard & Traces**: [http://localhost:3000](http://localhost:3000) (admin / admin)
+- **Grafana Tempo Endpoint**: [http://localhost:3200](http://localhost:3200)
 - **Prometheus Dashboard**: [http://localhost:9090](http://localhost:9090)
-- **Grafana Dashboard**: [http://localhost:3000](http://localhost:3000) (admin / admin)
 
 > [!TIP]
 > Docker Compose includes an automated `db-init` one-shot container that ensures the `csvdb` database exists before launching the application, even if using an existing PostgreSQL volume.

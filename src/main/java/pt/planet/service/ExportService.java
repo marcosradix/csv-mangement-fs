@@ -1,5 +1,6 @@
 package pt.planet.service;
 
+import io.micrometer.observation.annotation.Observed;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -36,6 +37,7 @@ public class ExportService {
             String filename
     ) {}
 
+    @Observed(name = "file.export", contextualName = "export-customers")
     @Transactional(readOnly = true)
     public ExportResult exportCustomers(ExportRequest request) {
         if (request == null) {

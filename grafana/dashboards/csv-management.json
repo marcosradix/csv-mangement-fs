@@ -18,7 +18,20 @@
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "id": null,
-  "links": [],
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "bolt",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Explore Traces (Tempo)",
+      "tooltip": "Open Tempo in Explore view to search traces",
+      "type": "link",
+      "url": "/explore?left=%7B%22datasource%22:%22tempo%22,%22queries%22:%5B%7B%22queryType%22:%22traceql%22,%22query%22:%22%7B%7D%22%7D%5D%7D"
+    }
+  ],
   "liveNow": false,
   "panels": [
     {
@@ -605,6 +618,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
+          "exemplar": true,
           "expr": "rate(file_import_duration_seconds_sum[1m]) / rate(file_import_duration_seconds_count[1m])",
           "legendFormat": "Avg Import Duration",
           "range": true,
@@ -655,6 +669,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
+          "exemplar": true,
           "expr": "file_import_duration_seconds_max",
           "legendFormat": "Max Import Duration",
           "range": true,
@@ -819,6 +834,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
+          "exemplar": true,
           "expr": "rate(file_export_duration_seconds_sum[1m]) / rate(file_export_duration_seconds_count[1m])",
           "legendFormat": "{{format}} avg",
           "range": true,
@@ -869,6 +885,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
+          "exemplar": true,
           "expr": "file_export_duration_seconds_max",
           "legendFormat": "{{format}} max",
           "range": true,
@@ -1096,6 +1113,72 @@
       ],
       "title": "HikariCP Connection Pool",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
+      "id": 104,
+      "title": "Distributed Tracing (Grafana Tempo)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 16,
+        "x": 0,
+        "y": 49
+      },
+      "id": 41,
+      "options": {},
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "editorMode": "code",
+          "limit": 30,
+          "query": "{}",
+          "queryType": "traceql",
+          "refId": "A"
+        }
+      ],
+      "title": "Live Distributed Traces (Tempo)",
+      "type": "traces"
+    },
+    {
+      "datasource": {
+        "type": "datasource",
+        "uid": "grafana"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 16,
+        "y": 49
+      },
+      "id": 42,
+      "options": {
+        "code": {
+          "language": "markdown",
+          "showLineNumbers": false
+        },
+        "content": "### 🔍 Tempo Distributed Tracing\n\nTempo captures end-to-end distributed traces sent directly from Spring Boot via OpenTelemetry (OTLP).\n\n#### ⚡ Quick Actions\n- **Click any trace** in the table to view the full waterfall timeline and span hierarchy.\n- [**Open Explore with Tempo ↗**](/explore?left=%7B%22datasource%22:%22tempo%22,%22queries%22:%5B%7B%22queryType%22:%22traceql%22,%22query%22:%22%7B%7D%22%7D%5D%7D)\n\n#### 🎯 Handy TraceQL Queries\n- **All traces:** `{}`\n- **Service spans:** `{ resource.service.name = \"csv-management-fs\" }`\n- **Errors only:** `{ status = error }`\n- **Slow requests (>100ms):** `{ duration > 100ms }`\n- **Import operations:** `{ name =~ \".*import.*\" }`\n- **Export operations:** `{ name =~ \".*export.*\" }`\n\n#### 📈 Exemplar Navigation\nClick the exemplar dots on any duration graph above to jump directly to the specific trace for that request!",
+        "mode": "markdown"
+      },
+      "pluginVersion": "10.0.0",
+      "title": "Tracing Guide & Shortcuts",
+      "type": "text"
     }
   ],
   "refresh": "5s",
@@ -1105,7 +1188,9 @@
     "csv-management",
     "spring-boot",
     "micrometer",
-    "prometheus"
+    "prometheus",
+    "tempo",
+    "tracing"
   ],
   "time": {
     "from": "now-15m",
