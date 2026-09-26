@@ -4,10 +4,28 @@ server:
 app:
   export:
     batch-size: 1000
+  rabbitmq:
+    exchange: ${RABBITMQ_EXCHANGE:csv.export.exchange}
+    notification-queue: ${RABBITMQ_NOTIFICATION_QUEUE:notification-service}
+    notification-routing-key: ${RABBITMQ_NOTIFICATION_ROUTING_KEY:notification.email}
+  aws:
+    region: ${AWS_REGION:us-east-1}
+    access-key-id: ${AWS_ACCESS_KEY_ID:test}
+    secret-access-key: ${AWS_SECRET_ACCESS_KEY:test}
+    s3:
+      bucket: ${AWS_S3_BUCKET:customer-exports}
+      endpoint: ${AWS_S3_ENDPOINT:http://localhost:4566}
+      public-endpoint: ${AWS_S3_PUBLIC_ENDPOINT:}
+      presigned-url-expiration-minutes: ${AWS_S3_PRESIGNED_EXPIRATION:1440}
 
 spring:
   application:
     name: csv-management-fs
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
   datasource:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:csvdb}
     username: ${DB_USERNAME:postgres}

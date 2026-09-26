@@ -22,6 +22,10 @@ import pt.planet.exportfile.ExportStrategy;
 import pt.planet.observability.AppMetricsService;
 import pt.planet.repository.CustomerRepository;
 
+import org.springframework.beans.factory.annotation.Qualifier;
+import pt.planet.notification.NotificationProducer;
+import pt.planet.storage.S3StorageService;
+
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.time.Duration;
@@ -30,6 +34,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -48,6 +53,9 @@ public class ExportService {
     private final AppMetricsService appMetricsService;
     private final EntityManager entityManager;
     private final int batchSize;
+    private final S3StorageService s3StorageService;
+    private final NotificationProducer notificationProducer;
+    private final Executor executor;
 
     @Autowired
     public ExportService(
@@ -55,13 +63,29 @@ public class ExportService {
             CustomerRepository customerRepository,
             AppMetricsService appMetricsService,
             EntityManager entityManager,
-            @Value("${app.export.batch-size}") int batchSize
+            @Value("${app.export.batch-size}") int batchSize,
+            @Autowired(required = false) S3StorageService s3StorageService,
+            @Autowired(required = false) NotificationProducer notificationProducer,
+            @Autowired(required = false) @Qualifier("exportTaskExecutor") Executor executor
     ) {
         this.exportStrategies = exportStrategies;
         this.customerRepository = customerRepository;
         this.appMetricsService = appMetricsService;
         this.entityManager = entityManager;
         this.batchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        this.s3StorageService = s3StorageService;
+        this.notificationProducer = notificationProducer;
+        this.executor = executor;
+    }
+
+    public ExportService(
+            List<ExportStrategy> exportStrategies,
+            CustomerRepository customerRepository,
+            AppMetricsService appMetricsService,
+            EntityManager entityManager,
+            int batchSize
+    ) {
+        this(exportStrategies, customerRepository, appMetricsService, entityManager, batchSize, null, null, null);
     }
 
     public ExportService(
@@ -70,7 +94,90 @@ public class ExportService {
             AppMetricsService appMetricsService,
             EntityManager entityManager
     ) {
-        this(exportStrategies, customerRepository, appMetricsService, entityManager, DEFAULT_BATCH_SIZE);
+        this(exportStrategies, customerRepository, appMetricsService, entityManager, DEFAULT_BATCH_SIZE, null, null, null);
+    }
+
+    public pt.planet.dto.ExportAsyncResponse processExportAsync(ExportRequest request, String userEmail) {
+        if (request == null) {
+            throw new InvalidFileException("Export request payload is required");
+        }
+
+        FormatEnum formatEnum = request.getFormat();
+        if (formatEnum == null) {
+            throw new InvalidFileException("Export format is required (CSV, TXT, or XLSX)");
+        }
+        String format = formatEnum.getValue();
+
+        List<String> rawColumns = request.getColumns();
+        if (rawColumns == null || rawColumns.isEmpty()) {
+            throw new InvalidColumnException("At least one export column must be specified");
+        }
+
+        for (String col : rawColumns) {
+            CustomerColumn.fromString(col);
+        }
+
+        ExportStrategy strategy = exportStrategies.stream()
+                .filter(s -> s.supports(format))
+                .findFirst()
+                .orElseThrow(() -> new InvalidExportFormatException("Unsupported export format: '" + format +
+                        "'. Supported formats are CSV, TXT, XLS, XLSX."));
+
+        java.util.UUID exportId = java.util.UUID.randomUUID();
+        String extension = strategy.getFileExtension();
+        String message = "Request sent to generate file with extension " + extension;
+
+        pt.planet.dto.ExportAsyncResponse response = new pt.planet.dto.ExportAsyncResponse();
+        response.setExportId(exportId);
+        response.setMessage(message);
+        response.setFormat(format);
+        response.setEmail(userEmail);
+
+        if (executor != null) {
+            executor.execute(() -> processExportInBackground(exportId, request, userEmail));
+        } else {
+            processExportInBackground(exportId, request, userEmail);
+        }
+
+        return response;
+    }
+
+    public void processExportInBackground(java.util.UUID exportId, ExportRequest request, String userEmail) {
+        try {
+            log.info("Starting background export for id: {}", exportId);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ExportMetadata metadata = exportCustomersToStream(request, out);
+            byte[] data = out.toByteArray();
+
+            String s3Key = "exports/" + metadata.filename();
+            String bucket = (s3StorageService != null) ? s3StorageService.getBucket() : "customer-exports";
+            String presignedUrl = "";
+
+            if (s3StorageService != null) {
+                s3StorageService.upload(s3Key, data, metadata.contentType());
+                presignedUrl = s3StorageService.generatePresignedUrl(s3Key, null);
+                log.info("Uploaded export {} to S3 key '{}'. Pre-signed URL generated.", exportId, s3Key);
+            }
+
+            pt.planet.dto.ExportNotificationMessage notification = new pt.planet.dto.ExportNotificationMessage(
+                    exportId,
+                    userEmail,
+                    metadata.filename(),
+                    request.getFormat().getValue(),
+                    bucket,
+                    s3Key,
+                    presignedUrl,
+                    metadata.totalRecords(),
+                    Instant.now()
+            );
+
+            if (notificationProducer != null) {
+                notificationProducer.sendExportNotification(notification);
+                log.info("Dispatched export completion notification to queue for exportId: {}", exportId);
+            }
+        } catch (Exception e) {
+            log.error("Failed to process background export for id {}: {}", exportId, e.getMessage(), e);
+        }
     }
 
     @Observed(name = "file.export", contextualName = "export-customers")

@@ -31,6 +31,36 @@ services:
         psql -h postgres -U postgres -c "CREATE DATABASE csvdb;"
       '
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: csv-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  localstack:
+    image: localstack/localstack:3.8
+    container_name: csv-localstack
+    restart: unless-stopped
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: s3
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - localstack_data:/var/lib/localstack
+
   app:
     build:
       context: .
@@ -45,14 +75,59 @@ services:
       DB_NAME: csvdb
       DB_USERNAME: postgres
       DB_PASSWORD: postgres
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      AWS_S3_ENDPOINT: http://localstack:4566
+      AWS_S3_PUBLIC_ENDPOINT: http://localhost:4566
+      AWS_S3_BUCKET: customer-exports
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
       MANAGEMENT_OTLP_TRACING_ENDPOINT: http://tempo:4318/v1/traces
     depends_on:
       postgres:
         condition: service_healthy
       db-init:
         condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      localstack:
+        condition: service_started
       tempo:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    container_name: csv-notification-service
+    restart: unless-stopped
+    ports:
+      - "${NOTIFICATION_PORT:-8082}:8080"
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USERNAME: ${SMTP_USERNAME:-marcosradix@gmail.com}
+      SMTP_PASSWORD: "${SMTP_PASSWORD:-njce clsl vzvd mhmg}"
+      SMTP_AUTH: ${SMTP_AUTH:-true}
+      SMTP_SSL: ${SMTP_SSL:-true}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+      SMTP_STARTTLS_REQUIRED: ${SMTP_STARTTLS_REQUIRED:-true}
+      SPRING_MAIL_TEST_CONNECTION: ${SPRING_MAIL_TEST_CONNECTION:-true}
+      MAIL_FROM: ${MAIL_FROM:-marcosradix@gmail.com}
+      MAIL_FROM_NAME: "${MAIL_FROM_NAME:-Planet Customer Portal}"
+      MAIL_ENABLED: ${MAIL_ENABLED:-true}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health/readiness"]
       interval: 10s
@@ -109,4 +184,6 @@ volumes:
   prometheus_data:
   grafana_data:
   tempo_data:
+  rabbitmq_data:
+  localstack_data:
 

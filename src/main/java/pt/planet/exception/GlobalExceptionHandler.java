@@ -217,6 +217,18 @@ public class GlobalExceptionHandler {
         return problem;
     }
 
+    @ExceptionHandler(org.springframework.web.bind.MissingRequestHeaderException.class)
+    public ProblemDetail handleMissingRequestHeader(org.springframework.web.bind.MissingRequestHeaderException ex, HttpServletRequest request) {
+        log.warn("Missing required header: {}", ex.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Missing Request Header");
+        problem.setDetail(ex.getMessage());
+        problem.setType(URI.create(BASE_PROBLEM_TYPE + "missing-header"));
+        problem.setInstance(URI.create(request.getRequestURI()));
+        problem.setProperty("timestamp", OffsetDateTime.now());
+        return problem;
+    }
+
     @ExceptionHandler(Exception.class)
     public ProblemDetail handleGeneralException(Exception ex, HttpServletRequest request) {
         log.error("Unexpected error occurred", ex);

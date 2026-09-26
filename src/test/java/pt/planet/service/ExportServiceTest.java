@@ -11,6 +11,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Limit;
 import pt.planet.domain.CustomerEntity;
+import pt.planet.dto.ExportAsyncResponse;
+import pt.planet.dto.ExportNotificationMessage;
 import pt.planet.dto.ExportRequest;
 import pt.planet.dto.ExportRequest.FormatEnum;
 import pt.planet.dto.ExportResult;
@@ -23,14 +25,18 @@ import pt.planet.exportfile.CsvExportStrategy;
 import pt.planet.exportfile.ExportStrategy;
 import pt.planet.exportfile.TxtExportStrategy;
 import pt.planet.exportfile.XlsxExportStrategy;
+import pt.planet.notification.NotificationProducer;
 import pt.planet.observability.AppMetricsService;
 import pt.planet.repository.CustomerRepository;
+import pt.planet.storage.S3StorageService;
 
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -59,8 +65,20 @@ class ExportServiceTest {
     @Mock
     private ExportStrategy xlsxStrategy;
 
+    @Mock
+    private S3StorageService s3StorageService;
+
+    @Mock
+    private NotificationProducer notificationProducer;
+
+    @Mock
+    private Executor executor;
+
     @Captor
     private ArgumentCaptor<List<CustomerColumn>> columnsCaptor;
+
+    @Captor
+    private ArgumentCaptor<ExportNotificationMessage> notificationCaptor;
 
     private ExportService exportService;
     private List<CustomerEntity> mockCustomers;
@@ -434,5 +452,94 @@ class ExportServiceTest {
 
         verifyNoInteractions(customerRepository);
         verifyNoInteractions(appMetricsService);
+    }
+
+    @Test
+    @DisplayName("Should return 202 async response and dispatch background task when processExportAsync is called")
+    void testProcessExportAsync_DispatchesTaskAndReturns202Response() {
+        // Given
+        when(csvStrategy.supports("CSV")).thenReturn(true);
+        when(csvStrategy.getFileExtension()).thenReturn(".csv");
+
+        ExportService asyncService = new ExportService(
+                List.of(csvStrategy),
+                customerRepository,
+                appMetricsService,
+                entityManager,
+                1000,
+                s3StorageService,
+                notificationProducer,
+                executor
+        );
+
+        ExportRequest request = new ExportRequest(FormatEnum.CSV, List.of("id", "name"));
+        String email = "customer@example.com";
+
+        // When
+        ExportAsyncResponse response = asyncService.processExportAsync(request, email);
+
+        // Then
+        assertThat(response).isNotNull();
+        assertThat(response.getExportId()).isNotNull();
+        assertThat(response.getFormat()).isEqualTo("CSV");
+        assertThat(response.getEmail()).isEqualTo("customer@example.com");
+        assertThat(response.getMessage()).isEqualTo("Request sent to generate file with extension .csv");
+
+        verify(executor).execute(any(Runnable.class));
+    }
+
+    @Test
+    @DisplayName("Should execute background export, upload to S3, generate presigned URL, and dispatch RabbitMQ notification")
+    void testProcessExportInBackground_UploadsToS3AndSendsNotification() {
+        // Given
+        when(csvStrategy.supports("CSV")).thenReturn(true);
+        when(csvStrategy.getContentType()).thenReturn("text/csv");
+        when(csvStrategy.getFileExtension()).thenReturn(".csv");
+        when(customerRepository.findAllByOrderByIdAsc(Limit.of(1000))).thenReturn(mockCustomers);
+
+        doAnswer(invocation -> {
+            CustomerBatchSupplier supplier = invocation.getArgument(0);
+            OutputStream os = invocation.getArgument(2);
+            supplier.fetchBatches(batch -> {});
+            os.write("id,name\n1,Alice Johnson\n".getBytes(StandardCharsets.UTF_8));
+            return null;
+        }).when(csvStrategy).export(any(CustomerBatchSupplier.class), anyList(), any(OutputStream.class));
+
+        when(s3StorageService.getBucket()).thenReturn("customer-exports");
+        when(s3StorageService.generatePresignedUrl(anyString(), any())).thenReturn("https://s3.amazonaws.com/customer-exports/exports/test.csv?token=xyz");
+
+        ExportService asyncService = new ExportService(
+                List.of(csvStrategy),
+                customerRepository,
+                appMetricsService,
+                entityManager,
+                1000,
+                s3StorageService,
+                notificationProducer,
+                executor
+        );
+
+        UUID exportId = UUID.randomUUID();
+        ExportRequest request = new ExportRequest(FormatEnum.CSV, List.of("id", "name"));
+        String email = "notify@example.com";
+
+        // When
+        asyncService.processExportInBackground(exportId, request, email);
+
+        // Then
+        verify(s3StorageService).upload(startsWith("exports/customers_"), any(byte[].class), eq("text/csv"));
+        verify(s3StorageService).generatePresignedUrl(startsWith("exports/customers_"), isNull());
+
+        verify(notificationProducer).sendExportNotification(notificationCaptor.capture());
+        ExportNotificationMessage message = notificationCaptor.getValue();
+
+        assertThat(message).isNotNull();
+        assertThat(message.exportId()).isEqualTo(exportId);
+        assertThat(message.email()).isEqualTo("notify@example.com");
+        assertThat(message.format()).isEqualTo("CSV");
+        assertThat(message.s3Bucket()).isEqualTo("customer-exports");
+        assertThat(message.s3Key()).startsWith("exports/customers_");
+        assertThat(message.presignedUrl()).isEqualTo("https://s3.amazonaws.com/customer-exports/exports/test.csv?token=xyz");
+        assertThat(message.recordCount()).isEqualTo(3);
     }
 }

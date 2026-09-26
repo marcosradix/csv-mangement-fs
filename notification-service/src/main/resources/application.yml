@@ -1,0 +1,64 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: notification-service
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+  mail:
+    host: ${SMTP_HOST:smtp.gmail.com}
+    port: ${SMTP_PORT:465}
+    username: ${SMTP_USERNAME}
+    password: ${SMTP_PASSWORD}
+    test-connection: ${SPRING_MAIL_TEST_CONNECTION:true}
+    properties:
+      mail:
+        smtp:
+          auth: ${SMTP_AUTH:true}
+          ssl:
+            enable: ${SMTP_SSL:true}
+          starttls:
+            enable: ${SMTP_STARTTLS:true}
+            required: ${SMTP_STARTTLS_REQUIRED:true}
+          connectiontimeout: 10000
+          timeout: 10000
+          writetimeout: 10000
+
+app:
+  rabbitmq:
+    notification-queue: ${RABBITMQ_NOTIFICATION_QUEUE:notification-service}
+    exchange: ${RABBITMQ_EXCHANGE:csv.export.exchange}
+    routing-key: ${RABBITMQ_NOTIFICATION_ROUTING_KEY:notification.email}
+  mail:
+    enabled: ${MAIL_ENABLED:true}
+    from: ${MAIL_FROM}
+    from-name: ${MAIL_FROM_NAME:Planet Customer Portal}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+    mail:
+      enabled: false
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  level:
+    pt.planet.notification: INFO
+    org.springframework.mail: DEBUG

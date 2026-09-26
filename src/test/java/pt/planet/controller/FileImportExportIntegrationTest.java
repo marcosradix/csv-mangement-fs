@@ -32,7 +32,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest(classes = pt.planet.Application.class)
+@SpringBootTest(classes = {pt.planet.Application.class, pt.planet.config.TestMessagingAndStorageConfig.class})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class FileImportExportIntegrationTest {
@@ -112,7 +112,7 @@ class FileImportExportIntegrationTest {
                                 .andExpect(jsonPath("$[0].errorMessages", hasSize(2)))
                                 .andExpect(jsonPath("$[0].rawData", containsString("Marco Rossi")));
 
-                // 5. Dynamic Export: CSV format with selected columns
+                // 5. Async Export: CSV format with selected columns and X-User-Email header
                 String csvExportPayload = """
                                 {
                                     "format": "CSV",
@@ -120,14 +120,16 @@ class FileImportExportIntegrationTest {
                                 }
                                 """;
                 mockMvc.perform(post("/api/v1/exports")
+                                .header("X-User-Email", "user@example.com")
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content(csvExportPayload))
-                                .andExpect(status().isOk())
-                                .andExpect(header().string("Content-Disposition", containsString("customers_")))
-                                .andExpect(content().string(containsString("id,name,country")))
-                                .andExpect(content().string(containsString("1,John Smith,Portugal")));
+                                .andExpect(status().isAccepted())
+                                .andExpect(jsonPath("$.message", is("Request sent to generate file with extension .csv")))
+                                .andExpect(jsonPath("$.format", is("CSV")))
+                                .andExpect(jsonPath("$.email", is("user@example.com")))
+                                .andExpect(jsonPath("$.exportId").exists());
 
-                // 6. Dynamic Export: TXT format with selected columns
+                // 6. Async Export: TXT format with selected columns
                 String txtExportPayload = """
                                 {
                                     "format": "TXT",
@@ -137,11 +139,12 @@ class FileImportExportIntegrationTest {
                 mockMvc.perform(post("/api/v1/exports")
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content(txtExportPayload))
-                                .andExpect(status().isOk())
-                                .andExpect(content().string(containsString("NAME")))
-                                .andExpect(content().string(containsString("John Smith")));
+                                .andExpect(status().isAccepted())
+                                .andExpect(jsonPath("$.message", is("Request sent to generate file with extension .txt")))
+                                .andExpect(jsonPath("$.format", is("TXT")))
+                                .andExpect(jsonPath("$.exportId").exists());
 
-                // 7. Dynamic Export: XLSX format
+                // 7. Async Export: XLSX format
                 String xlsxExportPayload = """
                                 {
                                     "format": "XLSX",
@@ -151,9 +154,10 @@ class FileImportExportIntegrationTest {
                 mockMvc.perform(post("/api/v1/exports")
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content(xlsxExportPayload))
-                                .andExpect(status().isOk())
-                                .andExpect(header().string("Content-Type", is(
-                                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")));
+                                .andExpect(status().isAccepted())
+                                .andExpect(jsonPath("$.message", is("Request sent to generate file with extension .xlsx")))
+                                .andExpect(jsonPath("$.format", is("XLSX")))
+                                .andExpect(jsonPath("$.exportId").exists());
 
                 // 8. Invalid Column in Export -> RFC 9457 Problem Details (HTTP 400)
                 String invalidExportPayload = """

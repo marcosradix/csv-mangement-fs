@@ -140,11 +140,21 @@ paths:
     post:
       tags:
         - Exports
-      summary: Export customer records dynamically
+      summary: Export customer records asynchronously
       description: >
-        Exports stored customer records in the requested format (CSV, TXT, XLS/XLSX)
-        containing only the requested columns in the specified order.
+        Initiates an asynchronous export of customer records in the requested format (CSV, TXT, XLS/XLSX).
+        Responds immediately with 202 Accepted. Upon processing, the file is uploaded to AWS S3
+        and an event is sent to the notification-service queue to email the pre-signed download link.
       operationId: exportData
+      parameters:
+        - name: X-User-Email
+          in: header
+          required: true
+          description: Recipient email address for export notification with pre-signed download link
+          schema:
+            type: string
+            format: email
+            example: "user@example.com"
       requestBody:
         required: true
         content:
@@ -152,28 +162,12 @@ paths:
             schema:
               $ref: '#/components/schemas/ExportRequest'
       responses:
-        '200':
-          description: Exported data file
-          headers:
-            Content-Disposition:
-              schema:
-                type: string
-              description: File attachment header with filename
+        '202':
+          description: Export request accepted and processing initiated
           content:
-            application/octet-stream:
+            application/json:
               schema:
-                type: string
-                format: binary
-            text/csv:
-              schema:
-                type: string
-            text/plain:
-              schema:
-                type: string
-            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
-              schema:
-                type: string
-                format: binary
+                $ref: '#/components/schemas/ExportAsyncResponse'
         '400':
           description: Invalid export column or format requested
           content:
@@ -322,6 +316,28 @@ components:
         rawData:
           type: string
           example: "5,Marco Rossi,+39000000000,marco@example,thirty,Italy,test"
+
+    ExportAsyncResponse:
+      type: object
+      required:
+        - exportId
+        - message
+        - format
+      properties:
+        exportId:
+          type: string
+          format: uuid
+          example: 550e8400-e29b-41d4-a716-446655440000
+        message:
+          type: string
+          example: "Request sent to generate file with extension .csv"
+        format:
+          type: string
+          example: "CSV"
+        email:
+          type: string
+          nullable: true
+          example: "user@example.com"
 
     ExportRequest:
       type: object

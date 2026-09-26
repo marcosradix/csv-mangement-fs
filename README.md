@@ -1,19 +1,24 @@
 # CSV Management & File Import/Export Service (`csv-management-fs`)
 
-A production-grade, API-First backend service built natively with **Java 25** and **Spring Boot 3.5.16**. It provides dynamic CSV parsing, multi-file batch imports with data merging, pageable customer queries, dynamic multi-format exports (CSV, TXT, Excel XLSX), robust concurrency control via JPA optimistic locking, and a full observability suite (Micrometer & Prometheus).
+A production-grade, API-First, event-driven backend ecosystem built natively with **Java 25** and **Spring Boot 3.5.16**. It provides dynamic CSV parsing, multi-file batch imports with data merging, pageable customer queries, dynamic multi-format exports (CSV, TXT, Excel XLSX), robust concurrency control via JPA optimistic locking, and a full observability suite (Micrometer, Prometheus, Tempo & Grafana).
+
+The system features an **Asynchronous Event-Driven Export Architecture**: export requests are accepted immediately (HTTP `202 Accepted`), processed in the background using memory-bounded keyset pagination, persisted to **AWS S3** (or **LocalStack** locally), and announced via **RabbitMQ** to a dedicated **Notification Microservice** (`notification-service`) that generates secure pre-signed download URLs and delivers responsive HTML notification emails via **Gmail SMTP**.
 
 ---
 
 ## Table of Contents
 - [Architecture & Design](#architecture--design)
+  - [System Flow & Microservices Diagram](#system-flow--microservices-diagram)
+  - [Core Architectural Decisions](#core-architectural-decisions)
 - [Key Features](#key-features)
 - [Tech Stack & Dependencies](#tech-stack--dependencies)
 - [Sample Data & Files](#sample-data--files)
 - [API Reference](#api-reference)
   - [1. Import Operations](#1-import-operations)
   - [2. Customer Operations](#2-customer-operations)
-  - [3. Export Operations](#3-export-operations)
-  - [4. Observability & Health](#4-observability--health)
+  - [3. Asynchronous Export Operations](#3-asynchronous-export-operations)
+  - [4. Notification Service API](#4-notification-service-api)
+  - [5. Observability & Health](#5-observability--health)
 - [How to Use Observability](#how-to-use-observability)
   - [1. Tracing with Correlation IDs](#1-tracing-with-correlation-ids)
   - [2. Health Probes & Business Status](#2-health-probes--business-status)
@@ -31,55 +36,73 @@ A production-grade, API-First backend service built natively with **Java 25** an
 
 ## Architecture & Design
 
-The service follows an **API-First / Contract-First** design pattern, generating interface stubs and DTOs from an OpenAPI 3.0 specification (`src/main/resources/openapi/api-spec.yaml`).
+The ecosystem is architected around two decoupled microservices cooperating over an AMQP message broker and cloud object storage:
 
+1. **`csv-management-app`** (Port `8081`): The primary business service managing customer records, CSV imports, batch reconciliation, and keyset-paginated background export file generation.
+2. **`notification-service`** (Port `8082`): An autonomous Spring Boot microservice consuming export completion events from RabbitMQ, formatting rich HTML notification templates, dispatching emails via Gmail SMTP, and keeping an in-memory audit trail.
+
+### System Flow & Microservices Diagram
+
+```mermaid
+flowchart TD
+    subgraph Client ["Client Layer"]
+        C[HTTP Client / Frontend]
+    end
+
+    subgraph CoreService ["csv-management-app (Port 8081)"]
+        EC[ExportController<br/>POST /api/v1/exports]
+        ES[ExportService<br/>@Async Keyset Worker]
+        PG[(PostgreSQL<br/>customers table)]
+        S3Client[AwsS3StorageService<br/>AWS SDK v2 S3Client]
+        RMP[RabbitMQNotificationProducer<br/>RabbitTemplate]
+    end
+
+    subgraph Storage ["Cloud / Object Storage"]
+        S3[(AWS S3 / LocalStack<br/>bucket: customer-exports)]
+    end
+
+    subgraph Messaging ["Message Broker"]
+        RMQ{{RabbitMQ<br/>DirectExchange: csv.export.exchange<br/>Queue: notification-service}}
+    end
+
+    subgraph NotifService ["notification-service (Port 8082)"]
+        NL[ExportNotificationListener<br/>@RabbitListener]
+        MS[MailService<br/>JavaMailSender]
+        HS[NotificationHistoryService<br/>In-Memory Audit Store]
+        NC[NotificationController<br/>GET /api/v1/notifications]
+    end
+
+    subgraph External ["Email Relay"]
+        SMTP[Gmail SMTP Relay<br/>smtp.gmail.com:465 SSL]
+        INBOX[User Email Inbox]
+    end
+
+    C -- "1. POST /api/v1/exports (Header: X-User-Email)" --> EC
+    EC -- "2. HTTP 202 Accepted (ExportAsyncResponse)" --> C
+    EC -. "Async handoff" .-> ES
+    ES -- "3. Keyset Pagination (WHERE id > :lastId)" --> PG
+    ES -- "4. Upload File" --> S3Client
+    S3Client -- "5. PutObject" --> S3
+    S3Client -- "6. Generate Pre-signed URL (24h)" --> ES
+    ES -- "7. Publish ExportNotificationMessage" --> RMP
+    RMP -- "8. amqp.basicPublish" --> RMQ
+    RMQ -- "9. Push Message" --> NL
+    NL -- "10. Format Responsive HTML Email" --> MS
+    NL -- "11. Record Notification" --> HS
+    MS -- "12. Dispatch MIME Email" --> SMTP
+    SMTP -- "13. Deliver Email with Download Button" --> INBOX
+    INBOX -- "14. Click S3 Pre-signed URL" --> S3
+    C -. "Query Audit History" .-> NC
 ```
-                  ┌──────────────────────────────────────────────┐
-                  │          HTTP REST Clients / Swagger UI       │
-                  └──────────────────────┬───────────────────────┘
-                                         │
-                 ┌───────────────────────▼────────────────────────┐
-                 │     CorrelationIdFilter (X-Correlation-ID)     │
-                 └───────────────────────┬────────────────────────┘
-                                         │
-                 ┌───────────────────────▼────────────────────────┐
-                 │      Generated OpenAPI Controllers & Models    │
-                 │      (pt.planet.api, pt.planet.controller)     │
-                 └───────┬────────────────────────────────┬───────┘
-                         │                                │
-            ┌────────────▼─────────────┐     ┌────────────▼────────────┐
-            │      ImportService       │     │      ExportService      │
-            └────────────┬─────────────┘     └────────────┬────────────┘
-                         │                                │
-         ┌───────────────┼───────────────┐                │
-         ▼               ▼               ▼                ▼
-┌─────────────────┐ ┌─────────┐ ┌─────────────────┐ ┌───────────────────┐
-│CsvHeaderAnalyzer│ │CsvParser│ │CustomerValidator│ │  ExportStrategy   │
-└─────────────────┘ └─────────┘ └─────────────────┘ │ (CSV, TXT, XLSX)  │
-         │               │               │          └───────────────────┘
-         └───────────────┼───────────────┘
-                         │
-                 ┌───────▼───────────────────────────────┐
-                 │  Spring Data JPA + PostgreSQL/Flyway  │
-                 │    (Optimistic Locking via @Version)  │
-                 └───────┬───────────────────────────────┘
-                         │
-        ┌────────────────▼────────────────┐
-        │  Actuator + Micrometer Metrics  │
-        │  (Health, Liveness, Prometheus) │
-        └────────────────┬────────────────┘
-                         │  /actuator/prometheus
-                         ▼
-                ┌─────────────────┐
-                │   Prometheus    │ (:9090)
-                └────────┬────────┘
-                         │  PromQL
-                         ▼
-                ┌─────────────────┐
-                │     Grafana     │ (:3000)
-                │ (Pre-built Dash)│
-                └─────────────────┘
-```
+
+### Core Architectural Decisions
+
+- **API-First / Contract-First**: Defined via OpenAPI 3.0 specification (`src/main/resources/openapi/api-spec.yaml`), automatically generating interfaces and DTOs.
+- **Asynchronous Execution Pattern**: Export requests detach immediately with HTTP `202 Accepted` returning tracking UUIDs, preventing HTTP client timeouts on massive datasets.
+- **Event-Driven Decoupling**: File generation and email delivery are separated across RabbitMQ, isolating SMTP latency and network flakiness from the primary transactional database.
+- **Stateless Cloud Storage**: Exported files are uploaded directly to S3/LocalStack rather than local container filesystems, enabling seamless horizontal container scaling.
+- **Ephemeral Pre-Signed URLs**: Download links expire securely after 24 hours without exposing long-lived AWS IAM credentials.
+- **Distributed Observability**: Every request is tagged with an `X-Correlation-ID` and traced across Tomcat, PostgreSQL, and background tasks through Micrometer, Prometheus, OpenTelemetry, and Grafana Tempo.
 
 ---
 
@@ -97,46 +120,63 @@ The service follows an **API-First / Contract-First** design pattern, generating
    - `GET /api/v1/customers` supports `page`, `size`, `sortBy`, and `direction` (`ASC`/`DESC`).
    - Secure field validation prevents JPA attribute injection.
 
-3. **Pluggable Dynamic Export Engine with Keyset Pagination**:
-   - Implements the **Strategy Pattern** across multiple output formats:
+3. **Asynchronous Multi-Format Export Engine with Keyset Pagination**:
+   - **Immediate Client Detach (HTTP 202)**: Returns `ExportAsyncResponse` with tracking UUID and file details immediately.
+   - **Keyset (Cursor-Based) Pagination Pattern**: Eliminates `OutOfMemoryError` on large tables by retrieving records in bounded batches (`WHERE id > :lastId ORDER BY id ASC LIMIT :batchSize`) using primary key B-Tree index seeks ($O(\log N)$).
+   - **Hibernate Persistence Context Eviction**: Calls `entityManager.clear()` after each batch to prevent first-level cache accumulation.
+   - **Strategy Pattern Formats**:
      - **CSV**: Standard comma-separated format via Apache Commons CSV streamed in batches.
      - **TXT**: Formatted tabular text report with aligned columns streamed via `BufferedWriter`.
-     - **XLSX**: Styled Microsoft Excel spreadsheet with headers and auto-sized columns via Apache POI's streaming `SXSSFWorkbook` (keeps a 100-row sliding window in memory and flushes to disk).
-   - **Keyset (Cursor-Based) Pagination Pattern**:
-     - Eliminates `OutOfMemoryError` on large tables by retrieving records in bounded batches (`WHERE id > :lastId ORDER BY id ASC LIMIT :batchSize`) using the primary key B-Tree index seek ($O(\log N)$).
-     - Periodically clears the Hibernate persistence context (`entityManager.clear()`) after each batch to prevent first-level cache accumulation.
-     - Bounded memory usage ($O(\text{batchSize})$) configurable via `app.export.batch-size` (default: `1000`).
-   - Allows clients to request any subset of columns in any desired sequence.
+     - **XLSX**: Styled Microsoft Excel spreadsheet with headers and auto-sized columns via Apache POI's streaming `SXSSFWorkbook` (100-row memory window).
 
-4. **Data Integrity & Concurrency**:
+4. **AWS S3 Object Storage & Ephemeral Pre-Signed URLs**:
+   - Generates files directly to temporary storage, uploads to **AWS S3** (or **LocalStack** locally via AWS SDK v2), and deletes the local temporary file.
+   - Creates secure pre-signed download URLs with a 24-hour expiration (`S3Presigner`).
+   - Configurable dual-endpoint resolution: uploads using internal Docker container endpoints while issuing download URLs with external public endpoints (e.g. `http://localhost:4566`).
+
+5. **RabbitMQ Event Bus & Message Broker**:
+   - Asynchronous export workers publish `ExportNotificationMessage` events to RabbitMQ `DirectExchange` (`csv.export.exchange`) on routing key `notification.email`.
+   - Durable queue binding (`notification-service`) with JSON message conversion via Jackson.
+
+6. **Dedicated Notification Microservice (`notification-service`)**:
+   - Autonomous Spring Boot consumer listening to the `notification-service` queue.
+   - Renders responsive HTML notification emails featuring export metadata (format, record count, execution UUID) and an attractive call-to-action button linking to the pre-signed S3 download URL.
+   - Dispatches emails through **Gmail SMTP** (port 465 SSL, StartTLS, and App Password authentication).
+   - In-memory thread-safe notification audit service with REST query endpoints (`GET /api/v1/notifications`).
+
+7. **Data Integrity & Concurrency**:
    - Optimistic locking via JPA `@Version` on `CustomerEntity` guarantees detection of concurrent write collisions.
 
-5. **Observability & Health**:
+8. **Observability & Distributed Tracing**:
    - Request tracking via `X-Correlation-ID` header and SLF4J MDC.
    - Custom Micrometer counters and timers for import counts, processed record metrics, and export durations.
-   - Custom Actuator health contributor showing live database entity counts at `/actuator/health`.
-   - Prometheus scrape endpoint at `/actuator/prometheus`.
+   - Actuator health probes (`/actuator/health/liveness`, `/actuator/health/readiness`).
+   - Prometheus scrape endpoint at `/actuator/prometheus` and distributed tracing via OpenTelemetry / Grafana Tempo (`/actuator`).
 
-6. **Modern Tooling & Compatibility**:
+9. **Modern Tooling & Compatibility**:
    - Fully compatible with **Java 25**, **MapStruct 1.6.3**, **Project Lombok 1.18.42**, **Lombok MapStruct Binding 0.2.0**, and **Springdoc OpenAPI 2.8.5**.
 
 ---
 
 ## Tech Stack & Dependencies
 
-| Technology | Version / Description |
-| :--- | :--- |
-| **Java** | 25 (Temurin 25.0.2 / Class file format 69) |
-| **Spring Boot** | 3.5.16 (Web, Data JPA, Validation, Actuator) |
-| **API Documentation** | Springdoc OpenAPI 2.8.5 (Swagger UI & OpenAPI 3.0) |
-| **Database** | PostgreSQL 16 (H2 in-memory for testing) |
-| **Schema Migrations** | Flyway 11.x |
-| **Code Generation** | OpenAPI Generator Maven Plugin 7.12.0 |
-| **DTO Mapping** | MapStruct 1.6.3 + Lombok MapStruct Binding 0.2.0 |
-| **Boilerplate Reduction**| Project Lombok 1.18.42 |
-| **File Processing** | Apache Commons CSV 1.12.0, Apache POI 5.4.0 (OOXML) |
-| **Metrics** | Micrometer Prometheus Registry |
-| **Containerization** | Docker multi-stage build & Docker Compose |
+| Technology | Version / Description | Purpose |
+| :--- | :--- | :--- |
+| **Java** | 25 (Temurin 25.0.2 / Class file format 69) | Core programming language |
+| **Spring Boot** | 3.5.16 (Web, Data JPA, Validation, Actuator, AMQP, Mail) | Framework & runtime |
+| **API Documentation** | Springdoc OpenAPI 2.8.5 (Swagger UI & OpenAPI 3.0) | Interactive API explorer |
+| **Database** | PostgreSQL 16 (H2 in-memory for testing) | Relational database |
+| **Message Broker** | RabbitMQ 3.13 (Management Alpine) | Event bus for asynchronous export notifications |
+| **Object Storage** | AWS S3 / LocalStack 3.8 | Storage for generated exports & pre-signed download URLs |
+| **AWS SDK** | AWS SDK for Java v2 (2.31.25 - S3 & S3Presigner) | S3 client and pre-signed URL generator |
+| **Email Relay** | Spring Boot Mail / Jakarta Mail 3.5.16 | SMTP email delivery via Gmail |
+| **Schema Migrations** | Flyway 11.x | Database versioning |
+| **Code Generation** | OpenAPI Generator Maven Plugin 7.12.0 | Contract-first controller and DTO generation |
+| **DTO Mapping** | MapStruct 1.6.3 + Lombok MapStruct Binding 0.2.0 | Fast type-safe bean mapping |
+| **Boilerplate Reduction**| Project Lombok 1.18.42 | Compile-time bytecode generation |
+| **File Processing** | Apache Commons CSV 1.12.0, Apache POI 5.4.0 (OOXML) | CSV, TXT, and Excel generation |
+| **Observability** | Micrometer, Prometheus, OpenTelemetry, Grafana Tempo | Metrics, dashboards, and distributed tracing |
+| **Containerization** | Docker multi-stage builds & Docker Compose | Multi-container orchestration |
 
 ---
 
@@ -243,30 +283,41 @@ Retrieves a paginated list of customers.
 
 ---
 
-### 3. Export Operations
+### 3. Asynchronous Export Operations
 
 #### `POST /api/v1/exports`
-Generates a downloadable export file of persisted customers.
+Triggers an asynchronous background export of customer records. The client receives an immediate `202 Accepted` response with a unique tracking UUID while processing continues in the background.
 
+- **HTTP Method**: `POST /api/v1/exports`
+- **Request Headers**:
+  - `Content-Type: application/json`
+  - `X-User-Email` *(optional, string)*: Recipient email address to be notified when the export finishes (e.g. `user@example.com`).
 - **Payload**:
   ```json
   {
     "format": "CSV",
-    "columns": ["id", "name", "phone", "email"]
+    "columns": ["id", "name", "phone", "email", "country"]
   }
   ```
 - **Supported Formats**: `CSV`, `TXT`, `XLSX`, `XLS`.
 - **Supported Columns**: `id`, `name`, `email`, `age`, `country`, `phone`.
+- **Response** (`202 Accepted`):
+  ```json
+  {
+    "exportId": "32292f10-5039-43f1-b4d0-d3326404016c",
+    "message": "Request sent to generate file with extension .csv",
+    "format": "CSV",
+    "email": "user@example.com"
+  }
+  ```
 
-**Example TXT output:**
-```text
-NAME       | COUNTRY  | AGE 
-----------------------------
-John Smith | Portugal | 35  
-Jane Doe   | Spain    | 28  
-Bob Smith  | France   | 42  
-Ana Costa  | Portugal |     
-```
+#### What Happens in the Background:
+1. **Keyset Query**: An asynchronous worker thread executes cursor-based queries against PostgreSQL (`WHERE id > :lastId ORDER BY id ASC LIMIT 1000`).
+2. **File Generation**: The strategy formats the stream to disk (`customers_<timestamp>.<ext>`).
+3. **S3 Upload**: The file is uploaded to the AWS S3 / LocalStack bucket (`customer-exports`) with metadata.
+4. **Pre-signed URL**: An ephemeral, secure pre-signed download URL (24h TTL) is generated.
+5. **RabbitMQ Event**: An `ExportNotificationMessage` is published to RabbitMQ direct exchange `csv.export.exchange` on routing key `notification.email`.
+6. **Notification Delivery**: The `notification-service` consumes the message and dispatches a branded HTML email via Gmail SMTP containing the download link directly to the recipient.
 
 #### Keyset (Cursor-Based) Pagination Pattern in Exports
 
@@ -300,7 +351,48 @@ To prevent `OutOfMemoryError` and memory spikes when exporting large databases, 
 
 ---
 
-### 4. Observability & Health
+### 4. Notification Service API
+
+The standalone **Notification Microservice** (`http://localhost:8082`) provides administrative and audit endpoints to monitor delivered notifications:
+
+#### `GET /api/v1/notifications`
+Retrieves recent email notification delivery records (latest first):
+```json
+[
+  {
+    "notificationId": "9e87a972-6a54-4e96-9520-db60290b2810",
+    "exportId": "30bf36a5-f912-4919-9d4c-9febcc831a3d",
+    "recipientEmail": "user@example.com",
+    "filename": "customers_20260926_213029.xlsx",
+    "format": "XLSX",
+    "recordCount": 4,
+    "presignedUrl": "http://localhost:4566/customer-exports/exports/customers_20260926_213029.xlsx?X-Amz-Algorithm=AWS4-HMAC-SHA256&...",
+    "status": "SENT",
+    "errorMessage": null,
+    "processedAt": "2026-09-26T21:30:32.397657927Z"
+  }
+]
+```
+
+#### `GET /api/v1/notifications/{exportId}`
+Fetches the notification audit record for a specific export UUID. Returns `404 Not Found` if no notification was dispatched for that export ID.
+
+#### `POST /api/v1/notifications/send-test`
+Dispatches an immediate test email through the active SMTP relay without triggering an export:
+- **Query Param or JSON Body**: `email` (e.g. `POST /api/v1/notifications/send-test?email=your-email@example.com`)
+- **Response** (`200 OK`):
+  ```json
+  {
+    "exportId": "18695ee3-6d57-4e29-ad84-fff766db9b8b",
+    "presignedUrl": "http://localhost:4566/customer-exports/exports/customers_test_1790457621025.csv?test=true",
+    "status": "SUCCESS",
+    "message": "Test notification email sent to your-email@example.com"
+  }
+  ```
+
+---
+
+### 5. Observability & Health
 
 - **`GET /actuator/health`**: Returns detailed health components including database connectivity and custom customer/import metrics:
   ```json
@@ -599,19 +691,19 @@ All API errors adhere to standard RFC 9457 `application/problem+json` format:
 
 ### Option A: Docker Compose (Recommended)
 
-Spins up the Spring Boot application and a dedicated PostgreSQL database container with health checks:
+Spins up the complete event-driven microservices ecosystem including PostgreSQL, RabbitMQ, LocalStack S3, both Spring Boot microservices, and observability tooling:
 
 ```bash
-# Build the images
+# Build the microservice images
 docker compose build
 
-# Start the stack in background
+# Start the entire ecosystem in the background
 docker compose up -d
 
-# View live application logs
-docker compose logs -f app
+# View live logs of both microservices
+docker compose logs -f app notification-service
 
-# Tear down the stack
+# Tear down the stack and volumes
 docker compose down
 ```
 
@@ -619,24 +711,31 @@ docker compose down
 
 | Service | Container Name | Host Port | Internal URL | Purpose |
 | :--- | :--- | :--- | :--- | :--- |
-| **Spring Boot App** | `csv-management-app` | `8081` | `http://app:8080` | REST API, Swagger UI, Actuator |
+| **Customer App** | `csv-management-app` | `8081` | `http://app:8080` | REST API, Swagger UI, Batch & Keyset Engine |
+| **Notification Service** | `csv-notification-service` | `8082` | `http://notification-service:8080` | RabbitMQ Consumer, HTML Email Dispatcher, Audit API |
+| **RabbitMQ** | `csv-rabbitmq` | `5672`, `15672` | `amqp://rabbitmq:5672` | Event Message Broker & Web Management UI (`guest`/`guest`) |
+| **LocalStack (AWS S3)** | `csv-localstack` | `4566` | `http://localstack:4566` | Emulated S3 Object Storage (`customer-exports` bucket) |
 | **PostgreSQL** | `csv-postgres` | `5432` | `postgres:5432` | Primary database (`csvdb`) |
 | **Tempo** | `csv-tempo` | `3200`, `4317`, `4318` | `http://tempo:3200` | Distributed Tracing Backend (OTLP) |
 | **Prometheus** | `csv-prometheus` | `9090` | `http://prometheus:9090` | Time-series metrics scraper |
 | **Grafana** | `csv-grafana` | `3000` | `http://grafana:3000` | Dashboards & Trace Explorer (`admin`/`admin`) |
 
-- **App & Swagger UI**: [http://localhost:8081/swagger-ui.html](http://localhost:8081/swagger-ui.html)
-- **Actuator Health**: [http://localhost:8081/actuator/health](http://localhost:8081/actuator/health)
-- **Grafana Dashboard & Traces**: [http://localhost:3000](http://localhost:3000) (admin / admin)
-- **Grafana Tempo Endpoint**: [http://localhost:3200](http://localhost:3200)
+#### Quick Links:
+- **Customer App & Swagger UI**: [http://localhost:8081/swagger-ui.html](http://localhost:8081/swagger-ui.html)
+- **Notification Service API**: [http://localhost:8082/api/v1/notifications](http://localhost:8082/api/v1/notifications)
+- **RabbitMQ Management Dashboard**: [http://localhost:15672](http://localhost:15672) *(Credentials: guest / guest)*
+- **LocalStack S3 Bucket Health**: [http://localhost:4566/_localstack/health](http://localhost:4566/_localstack/health)
+- **Actuator Health (App)**: [http://localhost:8081/actuator/health](http://localhost:8081/actuator/health)
+- **Actuator Health (Notification Service)**: [http://localhost:8082/actuator/health](http://localhost:8082/actuator/health)
+- **Grafana Dashboards & Traces**: [http://localhost:3000](http://localhost:3000) *(Credentials: admin / admin)*
 - **Prometheus Dashboard**: [http://localhost:9090](http://localhost:9090)
 
 > [!TIP]
-> Docker Compose includes an automated `db-init` one-shot container that ensures the `csvdb` database exists before launching the application, even if using an existing PostgreSQL volume.
+> The `docker-compose.yml` pre-configures real Gmail SMTP relay settings (`smtp.gmail.com:465` with SSL enabled) and automatically initializes the `customer-exports` S3 bucket inside LocalStack upon startup.
 
 ### Option B: Running Locally (Local Profile & VM Options)
 
-When running the application locally outside of Docker (via terminal or your preferred IDE), you **must activate the `local` profile** by setting the VM option:
+When running the applications locally outside of Docker (via terminal or IDE), activate the `local` profile:
 
 ```bash
 -Dspring.profiles.active=local
@@ -645,9 +744,10 @@ When running the application locally outside of Docker (via terminal or your pre
 #### Why is `-Dspring.profiles.active=local` required?
 
 1. **Loads Local Configuration**: Activates [`src/main/resources/application-local.yml`](file:///Users/marcosferreira/Documents/csv-mangement-fs/src/main/resources/application-local.yml).
-2. **Database Routing**: Points the PostgreSQL connection to `localhost:5432` (`jdbc:postgresql://localhost:5432/csvdb`) with default credentials (`postgres`/`postgres`).
-3. **Tracing Compatibility**: In the base profile (`application.yml`), OTLP tracing targets `http://tempo:4318`. In `application-local.yml`, tracing export is disabled by default (`MANAGEMENT_OTLP_TRACING_EXPORT_ENABLED: false`), preventing connection errors when Tempo is not running locally.
-4. **Port Configuration**: Exposes the application directly on port `8080` (accessible at `http://localhost:8080`).
+2. **Database Routing**: Points PostgreSQL to `localhost:5432` (`jdbc:postgresql://localhost:5432/csvdb`).
+3. **RabbitMQ & S3 Local Routing**: Points RabbitMQ to `localhost:5672` and AWS S3 endpoint to `http://localhost:4566`.
+4. **Tracing Compatibility**: Disables remote OTLP export when Tempo is not running locally.
+5. **Port Configuration**: Binds `csv-management-app` to port `8080` (or `8081` in Docker).
 
 ---
 
@@ -656,22 +756,22 @@ When running the application locally outside of Docker (via terminal or your pre
 Requires JDK 25 and Maven:
 
 ```bash
-# Optional: Spin up PostgreSQL only (if not already running natively)
-docker compose up -d postgres db-init
+# 1. Start support infrastructure (Postgres, RabbitMQ, LocalStack)
+docker compose up -d postgres db-init rabbitmq localstack
 
-# Method 1: Run directly with the Spring Boot Maven Plugin
+# 2. Run the main customer application
 mvn spring-boot:run -Dspring-boot.run.jvmArguments="-Dspring.profiles.active=local"
 
-# Method 2: Package and run JAR
-mvn clean package -DskipTests
-java -Dspring.profiles.active=local -jar target/csv-management-fs-1.0.0.jar
+# 3. (Optional) Run the notification service in a separate terminal
+cd notification-service
+mvn spring-boot:run
 ```
 
 ---
 
 #### 2. Running via IDE (VM Options Configuration)
 
-If running directly from your IDE by launching [`Application.java`](file:///Users/marcosferreira/Documents/csv-mangement-fs/src/main/java/pt/planet/Application.java) (`pt.planet.Application`):
+If running directly from your IDE by launching [`Application.java`](file:///Users/marcosferreira/Documents/csv-mangement-fs/src/main/java/pt/planet/Application.java):
 
 ##### **IntelliJ IDEA**
 1. Open **Run/Debug Configurations** (`Run` > `Edit Configurations...`).
@@ -681,7 +781,6 @@ If running directly from your IDE by launching [`Application.java`](file:///User
    ```text
    -Dspring.profiles.active=local
    ```
-   *(Alternatively, enter `local` in the **Active profiles** field).*
 5. Click **Apply** and **Run/Debug**.
 
 ##### **Visual Studio Code (VS Code)**
@@ -696,42 +795,41 @@ Add or update your `.vscode/launch.json` configuration:
 }
 ```
 
-##### **Eclipse / Spring Tool Suite (STS)**
-1. Right-click project > **Run As** > **Run Configurations...**.
-2. Select **Spring Boot App** > `Application`.
-3. Open the **Arguments** tab.
-4. In **VM arguments**, append:
-   ```text
-   -Dspring.profiles.active=local
-   ```
-5. Click **Apply** and **Run**.
-
----
-
-#### Local Endpoints:
-- **Swagger UI**: [http://localhost:8080/swagger-ui.html](http://localhost:8080/swagger-ui.html)
-- **Actuator Health**: [http://localhost:8080/actuator/health](http://localhost:8080/actuator/health)
-- **Actuator Prometheus**: [http://localhost:8080/actuator/prometheus](http://localhost:8080/actuator/prometheus)
-
 ---
 
 ## Testing & Quality Assurance
 
-The test suite covers unit tests, repository interactions, concurrency locking, and end-to-end multipart API integration tests:
+The ecosystem maintains comprehensive test coverage across both microservices, verifying unit behavior, keyset traversal, persistence context cache eviction, S3 uploads, RabbitMQ message serialisation, and MIME email templating:
+
+### Primary App Suite (`csv-management-fs`):
 
 | Test Class | Tests  | Scope / Focus |
 | :--- |:------:| :--- |
 | `CsvHeaderAnalyzerTest` |   7    | Case insensitivity, column aliases, unknown headers, missing required columns, whitespace trimming |
 | `CustomerValidatorTest` |   8    | Validation rules (email regex, age bounds, positive ID, length constraints) |
 | `ExportStrategyTest` |   3    | Correctness of CSV, aligned TXT tables, and Excel XLSX workbooks |
-| `ExportServiceTest` |   13   | Keyset pagination multi-batch traversal, persistence context cache eviction (`entityManager.clear()`), strategy routing, column validation, metrics, and real CSV/TXT/XLSX generation |
+| `ExportServiceTest` |   15   | Keyset pagination multi-batch traversal, cache eviction (`entityManager.clear()`), strategy routing, column validation, S3 upload invocation, and RabbitMQ event publishing |
 | `ImportServiceTest` |   7    | Upsert behavior, partial success tracking, resilient batch imports with invalid files, multi-file data merging, error logging |
 | `OptimisticLockingTest` |   1    | Concurrent update collisions and version checking via `@Version` |
 | `FileImportExportIntegrationTest` |   5    | End-to-end multi-part file uploads, resilient batch imports, pagination, sorting, and error retrieval |
-| **Total** | **44** | **100% passing test suite** |
+| `Subtotal (Core App)` | **47** | **100% passing test suite** |
 
-Run the full test suite with:
+### Notification Service Suite (`notification-service`):
+
+| Test Class | Tests  | Scope / Focus |
+| :--- |:------:| :--- |
+| `ExportNotificationListenerTest` |   3    | `@RabbitListener` payload consumption, audit persistence, missing recipient skipping |
+| `MailServiceTest` |   2    | Multipart MIME message creation, HTML template rendering, pre-signed link injection, simulation mode |
+| `NotificationControllerTest` |   3    | REST endpoints (`GET /api/v1/notifications`, `GET /api/v1/notifications/{id}`, `POST /send-test`) |
+| `Subtotal (Notification Service)` | **8** | **100% passing test suite** |
+
+### Total Passing Tests: **55 tests** (0 failures, 0 errors, 0 skipped)
+
+Run tests for the whole project:
 ```bash
+# Run core app tests (47 tests)
 mvn clean test
+
+# Run notification service tests (8 tests)
+mvn -f notification-service/pom.xml clean test
 ```
-All **44 tests** execute cleanly with 0 failures and 0 errors.

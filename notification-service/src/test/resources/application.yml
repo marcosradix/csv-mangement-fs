@@ -1,0 +1,19 @@
+server:
+  port: 0
+
+spring:
+  application:
+    name: notification-service-test
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.amqp.RabbitAutoConfiguration
+
+app:
+  rabbitmq:
+    notification-queue: notification-service
+    exchange: csv.export.exchange
+    routing-key: notification.email
+  mail:
+    enabled: true
+    from: noreply@planet.pt
+    from-name: Planet Customer Portal
