@@ -1,6 +1,7 @@
 package pt.planet.controller;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
@@ -21,7 +22,25 @@ public class ImportController implements ImportsApi {
     @Override
     public ResponseEntity<List<ImportResponse>> importCsv(List<MultipartFile> files) {
         List<ImportResponse> responses = importService.processImports(files);
-        return ResponseEntity.ok(responses);
+
+        return getResponse(responses);
+    }
+
+    private static ResponseEntity<List<ImportResponse>> getResponse(List<ImportResponse> responses) {
+        boolean hasSuccess = responses.stream()
+                .anyMatch(r -> r.getSuccessfulRecords() != null && r.getSuccessfulRecords() > 0);
+        boolean hasErrors = responses.stream()
+                .anyMatch(r -> (r.getFailedRecords() != null && r.getFailedRecords() > 0)
+                        || r.getStatus() == ImportResponse.StatusEnum.FAILED
+                        || r.getStatus() == ImportResponse.StatusEnum.PARTIAL_SUCCESS);
+
+        if (!hasSuccess && hasErrors) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(responses);
+        } else if (hasSuccess && hasErrors) {
+            return ResponseEntity.status(HttpStatus.PARTIAL_CONTENT).body(responses);
+        } else {
+            return ResponseEntity.ok(responses);
+        }
     }
 
     @Override

@@ -45,7 +45,15 @@ paths:
                   description: The CSV file(s) to import
       responses:
         '200':
-          description: Import completed (Full or Partial Success for each file)
+          description: Import completed successfully (all records succeeded)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImportResponse'
+        '206':
+          description: Partial import completed (some records succeeded and some failed)
           content:
             application/json:
               schema:
@@ -53,8 +61,13 @@ paths:
                 items:
                   $ref: '#/components/schemas/ImportResponse'
         '400':
-          description: Malformed file or invalid payload
+          description: Import failed with errors or malformed payload
           content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ImportResponse'
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetail'

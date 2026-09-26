@@ -5,7 +5,6 @@ import pt.planet.domain.CustomerEntity;
 import pt.planet.exception.InvalidFileException;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 
 @Component
@@ -17,8 +16,10 @@ public class TxtExportStrategy implements ExportStrategy {
     }
 
     @Override
-    public void export(CustomerBatchSupplier customerSupplier, List<CustomerColumn> columns, java.io.OutputStream outputStream) {
-        try (java.io.BufferedWriter writer = new java.io.BufferedWriter(new java.io.OutputStreamWriter(outputStream, StandardCharsets.UTF_8))) {
+    public void export(CustomerBatchSupplier customerSupplier, List<CustomerColumn> columns,
+            java.io.OutputStream outputStream) {
+        try (java.io.BufferedWriter writer = new java.io.BufferedWriter(
+                new java.io.OutputStreamWriter(outputStream, StandardCharsets.UTF_8))) {
             int numCols = columns.size();
             int[] colWidths = new int[numCols];
 

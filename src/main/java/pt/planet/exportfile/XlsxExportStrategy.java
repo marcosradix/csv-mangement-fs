@@ -6,14 +6,10 @@ import org.apache.poi.ss.usermodel.FillPatternType;
 import org.apache.poi.ss.usermodel.Font;
 import org.apache.poi.ss.usermodel.IndexedColors;
 import org.apache.poi.ss.usermodel.Row;
-import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.ss.usermodel.Workbook;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.stereotype.Component;
 import pt.planet.domain.CustomerEntity;
 import pt.planet.exception.InvalidFileException;
 
-import java.io.ByteArrayOutputStream;
 import java.util.List;
 
 @Component
@@ -25,9 +21,12 @@ public class XlsxExportStrategy implements ExportStrategy {
     }
 
     @Override
-    public void export(CustomerBatchSupplier customerSupplier, List<CustomerColumn> columns, java.io.OutputStream outputStream) {
-        // SXSSFWorkbook maintains a sliding window of 100 rows in memory, flushing excess rows to disk
-        try (org.apache.poi.xssf.streaming.SXSSFWorkbook workbook = new org.apache.poi.xssf.streaming.SXSSFWorkbook(100)) {
+    public void export(CustomerBatchSupplier customerSupplier, List<CustomerColumn> columns,
+            java.io.OutputStream outputStream) {
+        // SXSSFWorkbook maintains a sliding window of 100 rows in memory, flushing
+        // excess rows to disk
+        try (org.apache.poi.xssf.streaming.SXSSFWorkbook workbook = new org.apache.poi.xssf.streaming.SXSSFWorkbook(
+                100)) {
             org.apache.poi.xssf.streaming.SXSSFSheet sheet = workbook.createSheet("Customers");
             sheet.trackAllColumnsForAutoSizing();
 
@@ -49,7 +48,7 @@ public class XlsxExportStrategy implements ExportStrategy {
             }
 
             // Create Data Rows in batches from keyset supplier
-            int[] rowIndex = new int[]{1};
+            int[] rowIndex = new int[] { 1 };
             customerSupplier.fetchBatches(batch -> {
                 for (CustomerEntity customer : batch) {
                     Row row = sheet.createRow(rowIndex[0]++);
@@ -76,7 +75,7 @@ public class XlsxExportStrategy implements ExportStrategy {
             }
 
             workbook.write(outputStream);
-            workbook.dispose(); // Delete temporary files from disk
+            workbook.close(); // Delete temporary files from disk
         } catch (Exception e) {
             throw new InvalidFileException("Error generating Excel export: " + e.getMessage(), e);
         }

@@ -92,7 +92,7 @@ class FileImportExportIntegrationTest {
                 MockMultipartFile file3 = new MockMultipartFile("files", "customers_03.csv", "text/csv", csv3);
 
                 MvcResult partialResult = mockMvc.perform(multipart("/api/v1/imports").file(file3))
-                                .andExpect(status().isOk())
+                                .andExpect(status().is(206))
                                 .andExpect(jsonPath("$[0].status", is("PARTIAL_SUCCESS")))
                                 .andExpect(jsonPath("$[0].totalRecords", is(2)))
                                 .andExpect(jsonPath("$[0].successfulRecords", is(1)))
@@ -207,7 +207,7 @@ class FileImportExportIntegrationTest {
                 mockMvc.perform(multipart("/api/v1/imports")
                                 .file(file1)
                                 .file(file2))
-                                .andExpect(status().isOk())
+                                .andExpect(status().is(206))
                                 .andExpect(jsonPath("$", hasSize(2)))
                                 .andExpect(jsonPath("$[0].filename", is("customers_01.csv")))
                                 .andExpect(jsonPath("$[0].status", is("SUCCESS")))
@@ -273,7 +273,7 @@ class FileImportExportIntegrationTest {
                 mockMvc.perform(multipart("/api/v1/imports")
                                 .file(validFile)
                                 .file(emptyFile))
-                                .andExpect(status().isOk())
+                                .andExpect(status().is(206))
                                 .andExpect(jsonPath("$", hasSize(2)))
                                 .andExpect(jsonPath("$[0].filename", is("customers_01.csv")))
                                 .andExpect(jsonPath("$[0].status", is("SUCCESS")))
@@ -315,5 +315,20 @@ class FileImportExportIntegrationTest {
                                 .andExpect(jsonPath("$.status", is(400)))
                                 .andExpect(jsonPath("$.title", is("Malformed Request")))
                                 .andExpect(jsonPath("$.type", is("https://planet.pt/problems/malformed-request")));
+        }
+
+        @Test
+        @DisplayName("Import with only errors should return HTTP 400 Bad Request with error details")
+        void testImportWithOnlyErrorsReturns400() throws Exception {
+                String invalidCsv = "id,name,email,age,country,phone\n1,Invalid Email,not-an-email,not-an-age,Portugal,+351910000000\n";
+                MockMultipartFile file = new MockMultipartFile("files", "invalid.csv", "text/csv",
+                                invalidCsv.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+                mockMvc.perform(multipart("/api/v1/imports").file(file))
+                                .andExpect(status().isBadRequest())
+                                .andExpect(jsonPath("$", hasSize(1)))
+                                .andExpect(jsonPath("$[0].status", is("FAILED")))
+                                .andExpect(jsonPath("$[0].successfulRecords", is(0)))
+                                .andExpect(jsonPath("$[0].failedRecords", is(1)));
         }
 }
