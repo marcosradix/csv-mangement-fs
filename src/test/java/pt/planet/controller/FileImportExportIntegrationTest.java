@@ -11,6 +11,7 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import pt.planet.domain.CustomerEntity;
 import pt.planet.observability.CorrelationIdFilter;
 import pt.planet.repository.CustomerRepository;
 import pt.planet.repository.ImportErrorRepository;
@@ -315,5 +316,37 @@ class FileImportExportIntegrationTest {
                                 .andExpect(jsonPath("$.status", is(400)))
                                 .andExpect(jsonPath("$.title", is("Malformed Request")))
                                 .andExpect(jsonPath("$.type", is("https://planet.pt/problems/malformed-request")));
+        }
+
+        @Test
+        @DisplayName("Re-importing identical CSV records via API should skip database updates and preserve versions")
+        void testImportDuplicateUnchangedRecordsSkipsUpdateViaApi() throws Exception {
+                byte[] csvContent = Files.readAllBytes(Path.of("samples/customers_01.csv"));
+                MockMultipartFile file1 = new MockMultipartFile("files", "customers_01.csv", "text/csv", csvContent);
+
+                // First import
+                mockMvc.perform(multipart("/api/v1/imports").file(file1))
+                                .andExpect(status().isOk())
+                                .andExpect(jsonPath("$[0].status", is("SUCCESS")))
+                                .andExpect(jsonPath("$[0].totalRecords", is(3)))
+                                .andExpect(jsonPath("$[0].successfulRecords", is(3)))
+                                .andExpect(jsonPath("$[0].failedRecords", is(0)));
+
+                CustomerEntity initial = customerRepository.findById(1L).orElseThrow();
+                assertThat(initial.getVersion()).isEqualTo(0L);
+                var initialUpdatedAt = initial.getUpdatedAt();
+
+                // Second import of identical file
+                MockMultipartFile file2 = new MockMultipartFile("files", "customers_01.csv", "text/csv", csvContent);
+                mockMvc.perform(multipart("/api/v1/imports").file(file2))
+                                .andExpect(status().isOk())
+                                .andExpect(jsonPath("$[0].status", is("SUCCESS")))
+                                .andExpect(jsonPath("$[0].totalRecords", is(3)))
+                                .andExpect(jsonPath("$[0].successfulRecords", is(3)))
+                                .andExpect(jsonPath("$[0].failedRecords", is(0)));
+
+                CustomerEntity afterReimport = customerRepository.findById(1L).orElseThrow();
+                assertThat(afterReimport.getVersion()).isEqualTo(0L);
+                assertThat(afterReimport.getUpdatedAt()).isEqualTo(initialUpdatedAt);
         }
 }

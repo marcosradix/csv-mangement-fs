@@ -216,39 +216,76 @@ public class ImportService {
         return customerMapper.toImportResponse(importEntity);
     }
 
-    private void upsertCustomer(CustomerRecord record) {
+    public enum UpsertResult {
+        INSERTED,
+        UPDATED,
+        SKIPPED_IDENTICAL
+    }
+
+    public UpsertResult upsertCustomer(CustomerRecord record) {
         Optional<CustomerEntity> existingOpt = customerRepository.findById(record.id());
-        CustomerEntity customer;
 
         if (existingOpt.isPresent()) {
-            customer = existingOpt.get();
+            CustomerEntity customer = existingOpt.get();
+
+            // Validation rule: when the record exists in database and all fields present in CSV are equal to database, do not insert or update
+            if (!hasChanges(record, customer)) {
+                log.info("Customer id {} already exists with identical data for all present fields. Skipping insert/update.", record.id());
+                return UpsertResult.SKIPPED_IDENTICAL;
+            }
+
             // Update fields (merge updates from incoming file)
             if (record.name() != null && !record.name().isBlank()) {
-                customer.setName(record.name());
+                customer.setName(record.name().trim());
             }
             if (record.email() != null && !record.email().isBlank()) {
-                customer.setEmail(record.email());
+                customer.setEmail(record.email().trim());
             }
-            if (ObjectUtils.isNotEmpty(record.age())) {
+            if (record.age() != null) {
                 customer.setAge(record.age());
             }
             if (record.country() != null && !record.country().isBlank()) {
-                customer.setCountry(record.country());
+                customer.setCountry(record.country().trim());
             }
             if (record.phone() != null && !record.phone().isBlank()) {
-                customer.setPhone(record.phone());
+                customer.setPhone(record.phone().trim());
             }
-        } else {
-            customer = new CustomerEntity(
-                    record.id(),
-                    record.name(),
-                    record.email(),
-                    record.age(),
-                    record.country(),
-                    record.phone());
-        }
 
-        customerRepository.saveAndFlush(customer);
+            customerRepository.saveAndFlush(customer);
+            log.info("Updated customer with id {}", record.id());
+            return UpsertResult.UPDATED;
+        } else {
+            CustomerEntity customer = new CustomerEntity(
+                    record.id(),
+                    record.name() != null ? record.name().trim() : null,
+                    record.email() != null ? record.email().trim() : null,
+                    record.age(),
+                    record.country() != null ? record.country().trim() : null,
+                    record.phone() != null ? record.phone().trim() : null);
+
+            customerRepository.saveAndFlush(customer);
+            log.info("Inserted customer with id {}", record.id());
+            return UpsertResult.INSERTED;
+        }
+    }
+
+    private boolean hasChanges(CustomerRecord record, CustomerEntity existing) {
+        if (record.name() != null && !record.name().isBlank() && !Objects.equals(record.name().trim(), existing.getName())) {
+            return true;
+        }
+        if (record.email() != null && !record.email().isBlank() && !Objects.equals(record.email().trim(), existing.getEmail())) {
+            return true;
+        }
+        if (record.age() != null && !Objects.equals(record.age(), existing.getAge())) {
+            return true;
+        }
+        if (record.country() != null && !record.country().isBlank() && !Objects.equals(record.country().trim(), existing.getCountry())) {
+            return true;
+        }
+        if (record.phone() != null && !record.phone().isBlank() && !Objects.equals(record.phone().trim(), existing.getPhone())) {
+            return true;
+        }
+        return false;
     }
 
     @Transactional(readOnly = true)

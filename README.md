@@ -88,7 +88,7 @@ The service follows an **API-First / Contract-First** design pattern, generating
 1. **Dynamic CSV Import Pipeline**:
    - **Header Flexibility**: Scans and detects headers regardless of column order, case sensitivity, or aliases (e.g. `telephone` -> `phone`). Tolerates extraneous unknown columns without failure.
    - **Row-Level Error Isolation**: Invalid rows are caught, persisted in `import_errors`, and logged without aborting the entire batch.
-   - **Idempotent Upsert Logic**: Merges incoming customer updates by ID. If a customer already exists, non-empty fields update the record; otherwise, a new record is created.
+   - **Idempotent Upsert Logic**: Merges incoming customer updates by ID. When a customer already exists in the database and all fields present in the incoming CSV line are equal to the database values, the insert/update is skipped (avoiding unnecessary database writes and preserving entity `@Version` and `updated_at` timestamps). When fields differ, non-empty incoming fields update the existing record; otherwise, a new record is inserted.
    - **Multi-File Batch Imports**: Accepts multiple CSV files in a single request, merging related records across files (e.g. basic customer data in file 1 and contact information in file 2).
    - **Fault-Tolerant Batch Imports**: Corrupted, empty, or headerless files within a batch do not abort execution; valid files are committed and invalid files are tracked as `FAILED`.
    - **Status Tracking**: Import batches are tracked with statuses: `SUCCESS`, `PARTIAL_SUCCESS`, or `FAILED`.
@@ -691,13 +691,13 @@ The test suite covers unit tests, repository interactions, concurrency locking, 
 | `CustomerValidatorTest` |   8    | Validation rules (email regex, age bounds, positive ID, length constraints) |
 | `ExportStrategyTest` |   3    | Correctness of CSV, aligned TXT tables, and Excel XLSX workbooks |
 | `ExportServiceTest` |   10   | Export business logic, strategy routing, column validation, metrics recording, and mock data tests |
-| `ImportServiceTest` |   7    | Upsert behavior, partial success tracking, resilient batch imports with invalid files, multi-file data merging, error logging |
+| `ImportServiceTest` |   11   | Upsert behavior, partial success tracking, skipping updates for unchanged records, resilient batch imports with invalid files, multi-file data merging, error logging |
 | `OptimisticLockingTest` |   1    | Concurrent update collisions and version checking via `@Version` |
-| `FileImportExportIntegrationTest` |   5    | End-to-end multi-part file uploads, resilient batch imports, pagination, sorting, and error retrieval |
-| **Total** | **41** | **100% passing test suite** |
+| `FileImportExportIntegrationTest` |   6    | End-to-end multi-part file uploads, idempotent re-imports skipping updates, resilient batch imports, pagination, sorting, and error retrieval |
+| **Total** | **46** | **100% passing test suite** |
 
 Run the full test suite with:
 ```bash
 mvn clean test
 ```
-All **41 tests** execute cleanly with 0 failures and 0 errors.
+All **46 tests** execute cleanly with 0 failures and 0 errors.

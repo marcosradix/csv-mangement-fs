@@ -16,6 +16,8 @@ import pt.planet.repository.CustomerRepository;
 import pt.planet.repository.ImportErrorRepository;
 import pt.planet.repository.ImportRepository;
 
+import pt.planet.importfile.CustomerRecord;
+
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -309,5 +311,113 @@ class ImportServiceTest {
         assertThat(noRowsErrors).isNotEmpty();
         assertThat(noRowsErrors.get(0).getFilename()).isEqualTo("no_rows.csv");
         assertThat(noRowsErrors.get(0).getErrorMessages().get(0)).contains("no data records");
+    }
+
+    @Test
+    @DisplayName("Should skip insert/update and preserve version and timestamps when re-importing identical records")
+    void testSkipInsertOrUpdateWhenAllPresentFieldsEqual() throws Exception {
+        // Initial import of 3 records
+        byte[] content = Files.readAllBytes(Path.of("samples/customers_01.csv"));
+        MockMultipartFile file1 = new MockMultipartFile("file", "customers_01.csv", "text/csv", content);
+        ImportResponse response1 = importService.processImport(file1);
+
+        assertThat(response1.getStatus()).isEqualTo(ImportResponse.StatusEnum.SUCCESS);
+        assertThat(response1.getSuccessfulRecords()).isEqualTo(3);
+
+        List<CustomerEntity> initialCustomers = customerRepository.findAllByOrderByIdAsc();
+        assertThat(initialCustomers).hasSize(3);
+        CustomerEntity c1Before = initialCustomers.get(0);
+        assertThat(c1Before.getVersion()).isEqualTo(0L);
+        var c1UpdatedAtBefore = c1Before.getUpdatedAt();
+
+        // Re-import identical file: all fields present in CSV are equal to DB
+        MockMultipartFile file2 = new MockMultipartFile("file", "customers_01.csv", "text/csv", content);
+        ImportResponse response2 = importService.processImport(file2);
+
+        // Status is SUCCESS, counted as successful, failedRecords is 0
+        assertThat(response2.getStatus()).isEqualTo(ImportResponse.StatusEnum.SUCCESS);
+        assertThat(response2.getTotalRecords()).isEqualTo(3);
+        assertThat(response2.getSuccessfulRecords()).isEqualTo(3);
+        assertThat(response2.getFailedRecords()).isEqualTo(0);
+
+        // Verify version and updatedAt were NOT modified (no UPDATE statement executed)
+        List<CustomerEntity> afterCustomers = customerRepository.findAllByOrderByIdAsc();
+        assertThat(afterCustomers).hasSize(3);
+        for (int i = 0; i < 3; i++) {
+            CustomerEntity before = initialCustomers.get(i);
+            CustomerEntity after = afterCustomers.get(i);
+            assertThat(after.getVersion()).isEqualTo(0L);
+            assertThat(after.getUpdatedAt()).isEqualTo(before.getUpdatedAt());
+            assertThat(after.getCreatedAt()).isEqualTo(before.getCreatedAt());
+        }
+    }
+
+    @Test
+    @DisplayName("Should skip update when only a subset of fields is present in CSV and all match the DB")
+    void testPartialFieldsEqualSkipsUpdateAndPreservesUnmappedFields() throws Exception {
+        // First import batch 1 and 2 so customer 1 has a phone number (+351910000000)
+        byte[] content1 = Files.readAllBytes(Path.of("samples/customers_01.csv"));
+        importService.processImport(new MockMultipartFile("file", "customers_01.csv", "text/csv", content1));
+
+        byte[] content2 = Files.readAllBytes(Path.of("samples/customers_02.csv"));
+        importService.processImport(new MockMultipartFile("file", "customers_02.csv", "text/csv", content2));
+
+        CustomerEntity c1WithPhone = customerRepository.findById(1L).orElseThrow();
+        assertThat(c1WithPhone.getPhone()).isEqualTo("+351910000000");
+        Long versionBefore = c1WithPhone.getVersion();
+        var updatedAtBefore = c1WithPhone.getUpdatedAt();
+
+        // Now import a CSV that does not include phone (customers_01.csv)
+        // Fields present in CSV are: id, name, email, age, country - all equal to DB
+        ImportResponse response = importService.processImport(new MockMultipartFile("file", "customers_01.csv", "text/csv", content1));
+
+        assertThat(response.getStatus()).isEqualTo(ImportResponse.StatusEnum.SUCCESS);
+
+        CustomerEntity c1After = customerRepository.findById(1L).orElseThrow();
+        // Phone must still be preserved
+        assertThat(c1After.getPhone()).isEqualTo("+351910000000");
+        // Version and updatedAt must NOT have changed
+        assertThat(c1After.getVersion()).isEqualTo(versionBefore);
+        assertThat(c1After.getUpdatedAt()).isEqualTo(updatedAtBefore);
+    }
+
+    @Test
+    @DisplayName("Should perform update and increment version when at least one present field differs")
+    void testDifferentFieldTriggersUpdate() throws Exception {
+        // Initial import
+        byte[] content1 = Files.readAllBytes(Path.of("samples/customers_01.csv"));
+        importService.processImport(new MockMultipartFile("file", "customers_01.csv", "text/csv", content1));
+
+        CustomerEntity c1Initial = customerRepository.findById(1L).orElseThrow();
+        assertThat(c1Initial.getVersion()).isEqualTo(0L);
+
+        // Import CSV with changed country for customer 1
+        String updateCsv = "id,name,email,age,country\n1,John Smith,john@example.com,35,Spain\n";
+        ImportResponse response = importService.processImport(
+                new MockMultipartFile("file", "update_country.csv", "text/csv", updateCsv.getBytes(StandardCharsets.UTF_8)));
+
+        assertThat(response.getStatus()).isEqualTo(ImportResponse.StatusEnum.SUCCESS);
+        assertThat(response.getSuccessfulRecords()).isEqualTo(1);
+
+        CustomerEntity c1Updated = customerRepository.findById(1L).orElseThrow();
+        assertThat(c1Updated.getCountry()).isEqualTo("Spain");
+        assertThat(c1Updated.getVersion()).isGreaterThan(0L);
+    }
+
+    @Test
+    @DisplayName("Should return correct UpsertResult enum from upsertCustomer")
+    void testDirectUpsertCustomerResultEnum() {
+        CustomerRecord newRecord = new CustomerRecord(999L, "Alice Wonder", "alice@example.com", 25, "UK", null, 2, "999,Alice Wonder,alice@example.com,25,UK");
+        ImportService.UpsertResult r1 = importService.upsertCustomer(newRecord);
+        assertThat(r1).isEqualTo(ImportService.UpsertResult.INSERTED);
+
+        // Call again with identical data -> SKIPPED_IDENTICAL
+        ImportService.UpsertResult r2 = importService.upsertCustomer(newRecord);
+        assertThat(r2).isEqualTo(ImportService.UpsertResult.SKIPPED_IDENTICAL);
+
+        // Call with updated age -> UPDATED
+        CustomerRecord updatedRecord = new CustomerRecord(999L, "Alice Wonder", "alice@example.com", 26, "UK", null, 2, "999,Alice Wonder,alice@example.com,26,UK");
+        ImportService.UpsertResult r3 = importService.upsertCustomer(updatedRecord);
+        assertThat(r3).isEqualTo(ImportService.UpsertResult.UPDATED);
     }
 }
