@@ -24,7 +24,7 @@ A production-grade, API-First backend service built natively with **Java 25** an
 - [Error Handling (RFC 9457)](#error-handling-rfc-9457)
 - [Running the Application](#running-the-application)
   - [Option A: Docker Compose (Recommended)](#option-a-docker-compose-recommended)
-  - [Option B: Local Maven Execution](#option-b-local-maven-execution)
+  - [Option B: Running Locally (Local Profile & VM Options)](#option-b-running-locally-local-profile--vm-options)
 - [Testing & Quality Assurance](#testing--quality-assurance)
 
 ---
@@ -600,20 +600,84 @@ docker compose down
 > [!TIP]
 > Docker Compose includes an automated `db-init` one-shot container that ensures the `csvdb` database exists before launching the application, even if using an existing PostgreSQL volume.
 
-### Option B: Local Maven Execution
+### Option B: Running Locally (Local Profile & VM Options)
+
+When running the application locally outside of Docker (via terminal or your preferred IDE), you **must activate the `local` profile** by setting the VM option:
+
+```bash
+-Dspring.profiles.active=local
+```
+
+#### Why is `-Dspring.profiles.active=local` required?
+
+1. **Loads Local Configuration**: Activates [`src/main/resources/application-local.yml`](file:///Users/marcosferreira/Documents/csv-mangement-fs/src/main/resources/application-local.yml).
+2. **Database Routing**: Points the PostgreSQL connection to `localhost:5432` (`jdbc:postgresql://localhost:5432/csvdb`) with default credentials (`postgres`/`postgres`).
+3. **Tracing Compatibility**: In the base profile (`application.yml`), OTLP tracing targets `http://tempo:4318`. In `application-local.yml`, tracing export is disabled by default (`MANAGEMENT_OTLP_TRACING_EXPORT_ENABLED: false`), preventing connection errors when Tempo is not running locally.
+4. **Port Configuration**: Exposes the application directly on port `8080` (accessible at `http://localhost:8080`).
+
+---
+
+#### 1. Running via Terminal / Command Line
 
 Requires JDK 25 and Maven:
 
 ```bash
-# Run tests
-mvn clean test
+# Optional: Spin up PostgreSQL only (if not already running natively)
+docker compose up -d postgres db-init
 
-# Package JAR
+# Method 1: Run directly with the Spring Boot Maven Plugin
+mvn spring-boot:run -Dspring-boot.run.jvmArguments="-Dspring.profiles.active=local"
+
+# Method 2: Package and run JAR
 mvn clean package -DskipTests
-
-# Run JAR (ensure PostgreSQL is running or active profile points to H2)
-java -jar target/csv-management-fs-1.0.0.jar
+java -Dspring.profiles.active=local -jar target/csv-management-fs-1.0.0.jar
 ```
+
+---
+
+#### 2. Running via IDE (VM Options Configuration)
+
+If running directly from your IDE by launching [`Application.java`](file:///Users/marcosferreira/Documents/csv-mangement-fs/src/main/java/pt/planet/Application.java) (`pt.planet.Application`):
+
+##### **IntelliJ IDEA**
+1. Open **Run/Debug Configurations** (`Run` > `Edit Configurations...`).
+2. Select your Spring Boot configuration for `Application`.
+3. Click **Modify options** (or `Alt+V` / `Cmd+V`) and select **Add VM options**.
+4. In the **VM options** field, enter:
+   ```text
+   -Dspring.profiles.active=local
+   ```
+   *(Alternatively, enter `local` in the **Active profiles** field).*
+5. Click **Apply** and **Run/Debug**.
+
+##### **Visual Studio Code (VS Code)**
+Add or update your `.vscode/launch.json` configuration:
+```json
+{
+  "type": "java",
+  "name": "Launch Application (Local)",
+  "request": "launch",
+  "mainClass": "pt.planet.Application",
+  "vmArgs": "-Dspring.profiles.active=local"
+}
+```
+
+##### **Eclipse / Spring Tool Suite (STS)**
+1. Right-click project > **Run As** > **Run Configurations...**.
+2. Select **Spring Boot App** > `Application`.
+3. Open the **Arguments** tab.
+4. In **VM arguments**, append:
+   ```text
+   -Dspring.profiles.active=local
+   ```
+5. Click **Apply** and **Run**.
+
+---
+
+#### Local Endpoints:
+- **Swagger UI**: [http://localhost:8080/swagger-ui.html](http://localhost:8080/swagger-ui.html)
+- **Actuator Health**: [http://localhost:8080/actuator/health](http://localhost:8080/actuator/health)
+- **Actuator Prometheus**: [http://localhost:8080/actuator/prometheus](http://localhost:8080/actuator/prometheus)
 
 ---
 
