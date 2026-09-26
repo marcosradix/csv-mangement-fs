@@ -700,4 +700,4 @@ Run the full test suite with:
 ```bash
 mvn clean test
 ```
-All **39 tests** execute cleanly with 0 failures and 0 errors.
+All **41 tests** execute cleanly with 0 failures and 0 errors.
