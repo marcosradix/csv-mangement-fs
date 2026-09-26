@@ -8,37 +8,37 @@ import java.util.Arrays;
 
 @Getter
 public enum CustomerColumn {
-    ID("id") {
+    ID("id", 8) {
         @Override
         public String getValue(CustomerEntity customer) {
             return customer.getId() != null ? customer.getId().toString() : "";
         }
     },
-    NAME("name") {
+    NAME("name", 25) {
         @Override
         public String getValue(CustomerEntity customer) {
             return customer.getName() != null ? customer.getName() : "";
         }
     },
-    EMAIL("email") {
+    EMAIL("email", 30) {
         @Override
         public String getValue(CustomerEntity customer) {
             return customer.getEmail() != null ? customer.getEmail() : "";
         }
     },
-    AGE("age") {
+    AGE("age", 6) {
         @Override
         public String getValue(CustomerEntity customer) {
             return customer.getAge() != null ? customer.getAge().toString() : "";
         }
     },
-    COUNTRY("country") {
+    COUNTRY("country", 20) {
         @Override
         public String getValue(CustomerEntity customer) {
             return customer.getCountry() != null ? customer.getCountry() : "";
         }
     },
-    PHONE("phone") {
+    PHONE("phone", 18) {
         @Override
         public String getValue(CustomerEntity customer) {
             return customer.getPhone() != null ? customer.getPhone() : "";
@@ -46,9 +46,11 @@ public enum CustomerColumn {
     };
 
     private final String headerName;
+    private final int defaultWidth;
 
-    CustomerColumn(String headerName) {
+    CustomerColumn(String headerName, int defaultWidth) {
         this.headerName = headerName;
+        this.defaultWidth = defaultWidth;
     }
 
     public abstract String getValue(CustomerEntity customer);

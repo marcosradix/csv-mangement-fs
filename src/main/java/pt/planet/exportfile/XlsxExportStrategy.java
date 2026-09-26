@@ -25,11 +25,11 @@ public class XlsxExportStrategy implements ExportStrategy {
     }
 
     @Override
-    public byte[] export(List<CustomerEntity> customers, List<CustomerColumn> columns) {
-        try (Workbook workbook = new XSSFWorkbook();
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-
-            Sheet sheet = workbook.createSheet("Customers");
+    public void export(CustomerBatchSupplier customerSupplier, List<CustomerColumn> columns, java.io.OutputStream outputStream) {
+        // SXSSFWorkbook maintains a sliding window of 100 rows in memory, flushing excess rows to disk
+        try (org.apache.poi.xssf.streaming.SXSSFWorkbook workbook = new org.apache.poi.xssf.streaming.SXSSFWorkbook(100)) {
+            org.apache.poi.xssf.streaming.SXSSFSheet sheet = workbook.createSheet("Customers");
+            sheet.trackAllColumnsForAutoSizing();
 
             // Header Style
             CellStyle headerStyle = workbook.createCellStyle();
@@ -48,33 +48,35 @@ public class XlsxExportStrategy implements ExportStrategy {
                 cell.setCellStyle(headerStyle);
             }
 
-            // Create Data Rows
-            int rowIndex = 1;
-            for (CustomerEntity customer : customers) {
-                Row row = sheet.createRow(rowIndex++);
-                for (int colIndex = 0; colIndex < columns.size(); colIndex++) {
-                    CustomerColumn col = columns.get(colIndex);
-                    Cell cell = row.createCell(colIndex);
-                    String value = col.getValue(customer);
+            // Create Data Rows in batches from keyset supplier
+            int[] rowIndex = new int[]{1};
+            customerSupplier.fetchBatches(batch -> {
+                for (CustomerEntity customer : batch) {
+                    Row row = sheet.createRow(rowIndex[0]++);
+                    for (int colIndex = 0; colIndex < columns.size(); colIndex++) {
+                        CustomerColumn col = columns.get(colIndex);
+                        Cell cell = row.createCell(colIndex);
+                        String value = col.getValue(customer);
 
-                    // Numeric formatting for ID and AGE if valid
-                    if (col == CustomerColumn.ID && customer.getId() != null) {
-                        cell.setCellValue(customer.getId());
-                    } else if (col == CustomerColumn.AGE && customer.getAge() != null) {
-                        cell.setCellValue(customer.getAge());
-                    } else {
-                        cell.setCellValue(value);
+                        // Numeric formatting for ID and AGE if valid
+                        if (col == CustomerColumn.ID && customer.getId() != null) {
+                            cell.setCellValue(customer.getId());
+                        } else if (col == CustomerColumn.AGE && customer.getAge() != null) {
+                            cell.setCellValue(customer.getAge());
+                        } else {
+                            cell.setCellValue(value);
+                        }
                     }
                 }
-            }
+            });
 
             // Auto-size columns
             for (int i = 0; i < columns.size(); i++) {
                 sheet.autoSizeColumn(i);
             }
 
-            workbook.write(out);
-            return out.toByteArray();
+            workbook.write(outputStream);
+            workbook.dispose(); // Delete temporary files from disk
         } catch (Exception e) {
             throw new InvalidFileException("Error generating Excel export: " + e.getMessage(), e);
         }

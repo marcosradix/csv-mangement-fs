@@ -9,6 +9,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 import pt.planet.api.ExportsApi;
 import pt.planet.dto.ExportRequest;
+import pt.planet.dto.ExportResult;
 import pt.planet.service.ExportService;
 
 @RestController
@@ -19,7 +20,7 @@ public class ExportController implements ExportsApi {
 
     @Override
     public ResponseEntity<Resource> exportData(ExportRequest exportRequest) {
-        ExportService.ExportResult result = exportService.exportCustomers(exportRequest);
+        ExportResult result = exportService.exportCustomers(exportRequest);
 
         ByteArrayResource resource = new ByteArrayResource(result.data());
 

@@ -97,11 +97,15 @@ The service follows an **API-First / Contract-First** design pattern, generating
    - `GET /api/v1/customers` supports `page`, `size`, `sortBy`, and `direction` (`ASC`/`DESC`).
    - Secure field validation prevents JPA attribute injection.
 
-3. **Pluggable Dynamic Export Engine**:
+3. **Pluggable Dynamic Export Engine with Keyset Pagination**:
    - Implements the **Strategy Pattern** across multiple output formats:
-     - **CSV**: Standard comma-separated format via Apache Commons CSV.
-     - **TXT**: Formatted fixed-width tabular report with dynamically calculated column widths.
-     - **XLSX**: Styled Microsoft Excel spreadsheet with headers and auto-sized columns via Apache POI.
+     - **CSV**: Standard comma-separated format via Apache Commons CSV streamed in batches.
+     - **TXT**: Formatted tabular text report with aligned columns streamed via `BufferedWriter`.
+     - **XLSX**: Styled Microsoft Excel spreadsheet with headers and auto-sized columns via Apache POI's streaming `SXSSFWorkbook` (keeps a 100-row sliding window in memory and flushes to disk).
+   - **Keyset (Cursor-Based) Pagination Pattern**:
+     - Eliminates `OutOfMemoryError` on large tables by retrieving records in bounded batches (`WHERE id > :lastId ORDER BY id ASC LIMIT :batchSize`) using the primary key B-Tree index seek ($O(\log N)$).
+     - Periodically clears the Hibernate persistence context (`entityManager.clear()`) after each batch to prevent first-level cache accumulation.
+     - Bounded memory usage ($O(\text{batchSize})$) configurable via `app.export.batch-size` (default: `1000`).
    - Allows clients to request any subset of columns in any desired sequence.
 
 4. **Data Integrity & Concurrency**:
@@ -263,6 +267,36 @@ Jane Doe   | Spain    | 28
 Bob Smith  | France   | 42  
 Ana Costa  | Portugal |     
 ```
+
+#### Keyset (Cursor-Based) Pagination Pattern in Exports
+
+To prevent `OutOfMemoryError` and memory spikes when exporting large databases, the export engine avoids `findAll()` in-memory buffering and instead uses **Keyset Pagination (Seek Method)**:
+
+1. **Indexed Seek Query ($O(\log N)$):**
+   ```sql
+   -- Initial batch:
+   SELECT * FROM customers ORDER BY id ASC LIMIT 1000;
+
+   -- Subsequent batches (using cursor):
+   SELECT * FROM customers WHERE id > :lastSeenId ORDER BY id ASC LIMIT 1000;
+   ```
+   Unlike `OFFSET ... LIMIT` (which suffers from linear $O(N)$ slowdown), keyset pagination performs an immediate B-Tree index seek on the primary key, remaining sub-millisecond fast regardless of whether reading the 1st or 1,000,000th row.
+
+2. **Persistence Context Eviction:**
+   After each batch of 1,000 records is processed, `entityManager.clear()` is called to evict entities from the Hibernate 1st-level cache, preventing JVM heap bloat.
+
+3. **Streaming Strategies:**
+   - **CSV**: Writes records batch-by-batch using Apache Commons `CSVPrinter`.
+   - **TXT**: Formats tabular lines directly to a `BufferedWriter` on the output stream.
+   - **XLSX**: Uses Apache POI's streaming `SXSSFWorkbook(100)`, keeping only a 100-row sliding window in memory while flushing excess rows to temporary disk storage.
+
+4. **Configuration:**
+   The batch size can be tuned in `application.yml`:
+   ```yaml
+   app:
+     export:
+       batch-size: 1000
+   ```
 
 ---
 
@@ -690,14 +724,14 @@ The test suite covers unit tests, repository interactions, concurrency locking, 
 | `CsvHeaderAnalyzerTest` |   7    | Case insensitivity, column aliases, unknown headers, missing required columns, whitespace trimming |
 | `CustomerValidatorTest` |   8    | Validation rules (email regex, age bounds, positive ID, length constraints) |
 | `ExportStrategyTest` |   3    | Correctness of CSV, aligned TXT tables, and Excel XLSX workbooks |
-| `ExportServiceTest` |   10   | Export business logic, strategy routing, column validation, metrics recording, and mock data tests |
+| `ExportServiceTest` |   13   | Keyset pagination multi-batch traversal, persistence context cache eviction (`entityManager.clear()`), strategy routing, column validation, metrics, and real CSV/TXT/XLSX generation |
 | `ImportServiceTest` |   7    | Upsert behavior, partial success tracking, resilient batch imports with invalid files, multi-file data merging, error logging |
 | `OptimisticLockingTest` |   1    | Concurrent update collisions and version checking via `@Version` |
 | `FileImportExportIntegrationTest` |   5    | End-to-end multi-part file uploads, resilient batch imports, pagination, sorting, and error retrieval |
-| **Total** | **41** | **100% passing test suite** |
+| **Total** | **44** | **100% passing test suite** |
 
 Run the full test suite with:
 ```bash
 mvn clean test
 ```
-All **41 tests** execute cleanly with 0 failures and 0 errors.
+All **44 tests** execute cleanly with 0 failures and 0 errors.

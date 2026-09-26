@@ -17,41 +17,25 @@ public class TxtExportStrategy implements ExportStrategy {
     }
 
     @Override
-    public byte[] export(List<CustomerEntity> customers, List<CustomerColumn> columns) {
-        try {
+    public void export(CustomerBatchSupplier customerSupplier, List<CustomerColumn> columns, java.io.OutputStream outputStream) {
+        try (java.io.BufferedWriter writer = new java.io.BufferedWriter(new java.io.OutputStreamWriter(outputStream, StandardCharsets.UTF_8))) {
             int numCols = columns.size();
             int[] colWidths = new int[numCols];
 
-            // Header widths
+            // Header and column default widths
             for (int i = 0; i < numCols; i++) {
-                colWidths[i] = Math.max(columns.get(i).getHeaderName().length(), 4);
+                colWidths[i] = Math.max(columns.get(i).getHeaderName().length(), columns.get(i).getDefaultWidth());
             }
-
-            // Prepare row data and compute max widths
-            List<List<String>> rowValues = new ArrayList<>(customers.size());
-            for (CustomerEntity customer : customers) {
-                List<String> row = new ArrayList<>(numCols);
-                for (int i = 0; i < numCols; i++) {
-                    String val = columns.get(i).getValue(customer);
-                    row.add(val);
-                    if (val.length() > colWidths[i]) {
-                        colWidths[i] = val.length();
-                    }
-                }
-                rowValues.add(row);
-            }
-
-            StringBuilder sb = new StringBuilder();
 
             // Format Header
             for (int i = 0; i < numCols; i++) {
                 String header = columns.get(i).getHeaderName().toUpperCase();
-                sb.append(String.format("%-" + colWidths[i] + "s", header));
+                writer.write(String.format("%-" + colWidths[i] + "s", header));
                 if (i < numCols - 1) {
-                    sb.append(" | ");
+                    writer.write(" | ");
                 }
             }
-            sb.append("\n");
+            writer.write("\n");
 
             // Format Separator line
             int totalLineWidth = 0;
@@ -59,20 +43,28 @@ public class TxtExportStrategy implements ExportStrategy {
                 totalLineWidth += width;
             }
             totalLineWidth += (numCols - 1) * 3; // " | " separators
-            sb.append("-".repeat(Math.max(1, totalLineWidth))).append("\n");
+            writer.write("-".repeat(Math.max(1, totalLineWidth)));
+            writer.write("\n");
 
-            // Format Data rows
-            for (List<String> row : rowValues) {
-                for (int i = 0; i < numCols; i++) {
-                    sb.append(String.format("%-" + colWidths[i] + "s", row.get(i)));
-                    if (i < numCols - 1) {
-                        sb.append(" | ");
+            // Stream data rows batch by batch from keyset supplier
+            customerSupplier.fetchBatches(batch -> {
+                try {
+                    for (CustomerEntity customer : batch) {
+                        for (int i = 0; i < numCols; i++) {
+                            String val = columns.get(i).getValue(customer);
+                            writer.write(String.format("%-" + colWidths[i] + "s", val));
+                            if (i < numCols - 1) {
+                                writer.write(" | ");
+                            }
+                        }
+                        writer.write("\n");
                     }
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
                 }
-                sb.append("\n");
-            }
+            });
 
-            return sb.toString().getBytes(StandardCharsets.UTF_8);
+            writer.flush();
         } catch (Exception e) {
             throw new InvalidFileException("Error generating TXT export: " + e.getMessage(), e);
         }

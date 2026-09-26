@@ -1,3 +1,7 @@
+app:
+  export:
+    batch-size: 1000
+
 spring:
   application:
     name: csv-management-fs-test

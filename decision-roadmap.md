@@ -66,6 +66,13 @@ Este documento formaliza as decisões de arquitetura e tecnologia adotadas no **
 * **Decisão:** Respostas de erro no formato padrão `application/problem+json` e injeção de `X-Correlation-ID` em cada requisição via SLF4J MDC.
 * **Motivação:** Diagnóstico imediato de incidentes através de logs correlacionados e mensagens de erro compreensíveis para os clientes da API.
 
+### 1.12 Keyset (Cursor-Based) Pagination Pattern na Exportação de Dados
+* **Decisão:** Utilização do padrão arquitetural **Keyset Pagination (Seek Method)** em conjunto com estratégias de streaming (`SXSSFWorkbook`, `CSVPrinter`, `BufferedWriter`) e limpeza periódica do contexto de persistência do Hibernate (`entityManager.clear()`).
+* **Motivação:** 
+  - **Eliminação de OutOfMemoryError:** Consultas convencionais como `findAll()` carregam toda a base de clientes para a memória heap da JVM. Em tabelas volumosas (centenas de milhares ou milhões de registros), isso gera pausas severas de GC e estouro de memória.
+  - **Performance e Index Seek:** Ao contrário do `OFFSET/LIMIT` tradicional (que sofre de degradação linear $O(N)$), a busca por `WHERE id > :lastId ORDER BY id ASC LIMIT :batchSize` utiliza diretamente o índice B-Tree da chave primária, mantendo tempo de resposta constante ($O(\log N)$ / microsegundos) independente da profundidade da paginação.
+  - **Consumo Previsível de Memória:** O consumo de heap é rigidamente limitado ao tamanho do lote configurável (`app.export.batch-size: 1000`), permitindo exportar bases massivas com pegada de memória constante.
+
 ---
 
 ## 2. Resumo da Matriz de Decisões
@@ -76,6 +83,7 @@ Este documento formaliza as decisões de arquitetura e tecnologia adotadas no **
 | **Contrato de API** | OpenAPI Design-First | Code-First (anotações nos controllers) | Garante especificação como fonte da verdade e gera DTOs/interfaces automaticamente. |
 | **Persistência** | PostgreSQL + Spring Data JPA | MongoDB / JDBC puro | Suporte relacional transacional (ACID), validação via Flyway e facilidade de queries. |
 | **Exportação** | Strategy Pattern | Switch/Case no Service | Fácil extensão para novos formatos (ex: PDF) mantendo o código desacoplado. |
+| **Leitura para Exportação** | Keyset (Cursor-Based) Pagination | `findAll()` em memória / `OFFSET-LIMIT` | Evita `OutOfMemoryError`, consumo $O(1)$ de heap, e seeks de índice B-Tree sem degradação. |
 | **Testes** | H2 em memória | Testcontainers com Postgres | Rapidez extrema de execução local e CI sem dependência do daemon Docker ativo. |
 | **Observabilidade** | Micrometer + Prometheus + Grafana | Somente Logs / Actuator isolado | Visibilidade visual de métricas de negócio e performance da JVM em tempo real. |
 
