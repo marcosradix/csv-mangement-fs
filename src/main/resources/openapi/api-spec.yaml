@@ -357,10 +357,6 @@ components:
           type: string
           nullable: true
           example: "+351910000000"
-        version:
-          type: integer
-          format: int64
-          example: 0
 
     PageCustomerResponse:
       type: object
